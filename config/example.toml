@@ -1,0 +1,63 @@
+# nwall example configuration
+# Copy to ~/.config/nwall/config.toml
+
+# Folder shown in the GUI gallery
+library = "~/Pictures/Wallpapers"
+
+# Optional default wallpaper (image or video)
+# wallpaper = "/path/to/wallpaper.mp4"
+
+# Target FPS for video. 0 = still (no decoder).
+fps = 24
+
+# Audio off by default
+mute = true
+volume = 0.0
+
+# cover | contain | stretch
+fit = "cover"
+
+# GUI: system | dark | light
+theme = "system"
+
+# theme_css = "~/.config/nwall/theme.css"
+
+# preview_width = 28
+
+# show_monitors = true
+
+# Slideshow: tray or Settings. source = catalog name or "library".
+# show_in_tray = true
+[slideshow]
+enabled = false
+interval_minutes = 30
+source = "Wallhaven"
+tags = "nature"
+
+[pause]
+# Video smart-pause
+on_fullscreen = true
+on_covered = true
+on_overview = true
+on_window_drag = true
+# Music smart-pause
+music_on_fullscreen = true
+music_on_overview = true
+music_on_window_drag = false
+music_on_covered = false
+music_on_other_audio = true
+
+# [outputs]
+# "DP-3" = "/path/to/left.png"
+
+# "eDP-1" = "/path/to/laptop.mp4"
+
+# Discover kinds: wallhaven, archive, bing, nasa, github, pixabay, coverr, index
+
+# API keys: wallhaven NSFW, pixabay, coverr. GitHub: GITHUB_TOKEN
+
+# See catalog.example.json for kind = "index"
+
+# Example: [[sources]] name = "Wallhaven" kind = "wallhaven" api_key = "YOUR_KEY"
+
+# Example: [[sources]] name = "GitHub" kind = "github"

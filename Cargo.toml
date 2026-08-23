@@ -1,0 +1,34 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nwall-ipc",
+    "crates/nwall-catalog",
+    "crates/nwalld",
+    "crates/nwall",
+    "crates/nwall-gui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["nwall contributors"]
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+log = "0.4"
+env_logger = "0.11"
+clap = { version = "4", features = ["derive"] }
+nwall-ipc = { path = "crates/nwall-ipc" }
+nwall-catalog = { path = "crates/nwall-catalog" }
+
+[profile.release]
+# Cross-crate LTO for hot pixel loops; slower release builds.
+lto = "fat"
+codegen-units = 1
+strip = true
+opt-level = 3
+# Keep unwind: aborting from a GTK callback would take down the whole UI.

@@ -1,0 +1,14 @@
+[package]
+name = "nwall-catalog"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Remote wallpaper / music catalog helpers for nwall (Discover, slideshow fetch)"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+nwall-ipc.workspace = true
+ureq = { version = "2", features = ["json"] }

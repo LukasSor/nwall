@@ -1,0 +1,40 @@
+
+use std::time::Duration;
+
+pub(crate) const SIDEBAR_MIN: i32 = 220;
+pub(crate) const PREVIEW_PCT_MIN: f64 = 20.0;
+pub(crate) const PREVIEW_PCT_MAX: f64 = 50.0;
+pub(crate) const LIVE_PREV_W: u32 = 560;
+pub(crate) const LIVE_PREV_H: u32 = 315;
+pub(crate) const LIVE_PREV_FPS: u32 = 12;
+pub(crate) const GALLERY_TOOLBAR_GAP: i32 = 16;
+pub(crate) const THUMB_W: i32 = 120;
+pub(crate) const THUMB_H: i32 = 120;
+pub(crate) const TILE_W: i32 = THUMB_W + 16;
+pub(crate) const TILE_DECODE_W: i32 = THUMB_W * 2;
+pub(crate) const TILE_DECODE_H: i32 = THUMB_H * 2;
+pub(crate) const TILE_RAW_MAX_BYTES: u64 = 180_000;
+pub(crate) const REMOTE_THUMB_QUEUE_MAX: usize = 72;
+pub(crate) const REMOTE_STILL_QUEUE_MAX: usize = 36;
+pub(crate) const REMOTE_STILL_WORKERS: usize = 2;
+pub(crate) const MOCK_THUMB_W: i32 = 220;
+pub(crate) const MOCK_THUMB_H: i32 = 156;
+pub(crate) const MONITOR_MOCK_GAP: f64 = 8.0;
+pub(crate) const MONITOR_MOCK_CHROME_X: f64 = 32.0;
+pub(crate) const MONITOR_MOCK_CHROME_Y: f64 = 42.0;
+pub(crate) const MONITOR_MOCK_MAP_PAD: f64 = 4.0;
+pub(crate) const AVATAR_PX: i32 = 28;
+pub(crate) const TAG_CLOUD_MAX: usize = 24;
+pub(crate) const TAG_MAX_ROWS: usize = 2;
+pub(crate) const TAG_ROW_GAP: i32 = 10;
+pub(crate) const STATS_SCROLL_MIN: i32 = 120;
+pub(crate) const STATS_LABEL_W: i32 = 118;
+pub(crate) const APP_ICON_NAME: &str = "nwall";
+pub(crate) const APP_ID: &str = "dev.nwall.Picker";
+pub(crate) const ZOOM_MIN: f64 = 0.75;
+pub(crate) const ZOOM_MAX: f64 = 1.75;
+pub(crate) const ZOOM_STEP: f64 = 0.1;
+pub(crate) const PREVIEW_LOAD_TIMEOUT: Duration = Duration::from_secs(8);
+
+pub(crate) const GITHUB_REPO_FILTER_NONE: &str = "__nwall_no_github_repo__";
+pub(crate) const REMOTE_STILL_TIMEOUT: Duration = Duration::from_secs(12);

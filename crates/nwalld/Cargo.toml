@@ -1,0 +1,37 @@
+[package]
+name = "nwalld"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "niri-optimized wallpaper daemon"
+
+[[bin]]
+name = "nwalld"
+path = "src/main.rs"
+
+[features]
+default = ["tray"]
+tray = ["dep:ksni"]
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+log.workspace = true
+env_logger.workspace = true
+clap.workspace = true
+nwall-ipc.workspace = true
+nwall-catalog.workspace = true
+
+smithay-client-toolkit = "0.20"
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client"] }
+calloop = "0.14"
+calloop-wayland-source = "0.4"
+
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp"] }
+fast_image_resize = "5"
+
+nix = { version = "0.29", features = ["signal", "process"] }
+ksni = { version = "0.2", optional = true }

@@ -1,0 +1,25 @@
+# Rust build output
+/target/
+
+# Backup / swap
+**/*.rs.bk
+*.swp
+*~
+
+# Editor / IDE
+.idea/
+.vscode/
+.cursor/
+*.sublime-*
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local secrets — real config lives in ~/.config/nwall/
+.env
+.env.*
+/config.toml

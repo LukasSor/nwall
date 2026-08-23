@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=nwall
+Comment=Wallpaper picker for niri
+Exec=nwall-gui
+Icon=nwall
+Terminal=false
+Categories=Graphics;GTK;
+StartupWMClass=dev.nwall.Picker

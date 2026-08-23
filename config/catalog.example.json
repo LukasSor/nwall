@@ -1,0 +1,16 @@
+{
+  "name": "Example video pack",
+  "items": [
+    {
+      "name": "Seaside",
+      "kind": "video",
+      "url": "https://example.com/seaside.mp4",
+      "thumb": "https://example.com/seaside.jpg"
+    },
+    {
+      "name": "Forest still",
+      "kind": "image",
+      "url": "https://example.com/forest.jpg"
+    }
+  ]
+}

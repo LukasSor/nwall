@@ -1,0 +1,14 @@
+// Live video must NOT use place-within-backdrop (freezes frames).
+layer-rule {
+    match namespace="^nwall-live$"
+    place-within-backdrop false
+}
+
+layer-rule {
+    match namespace="^nwall-backdrop$"
+    place-within-backdrop true
+}
+
+layout {
+    background-color "transparent"
+}

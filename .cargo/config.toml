@@ -1,0 +1,3 @@
+# Local builds: native CPU (not portable). Override with RUSTFLAGS="" for CI/artifacts.
+[build]
+rustflags = ["-C", "target-cpu=native"]
