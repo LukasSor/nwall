@@ -1,16 +1,7 @@
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-use nwall_ipc::{is_image, is_video, CatalogSource};
 use super::*;
 
 pub const UA: &str = "nwall/0.1 (niri wallpaper)";
@@ -521,6 +512,7 @@ pub(crate) fn github_preview_complete(item: &RemoteItem) -> bool {
     nonempty_opt(&item.uploader).is_some()
         && nonempty_opt(&item.page_url).is_some()
         && nonempty_opt(&item.license).is_some()
+        && !item.tags.is_empty()
 }
 
 pub(crate) fn ensure_archive_page_url(item: &mut RemoteItem) {
@@ -879,6 +871,7 @@ impl MediaStats {
         nonempty_opt(&self.uploader).is_none()
             || nonempty_opt(&self.page_url).is_none()
             || nonempty_opt(&self.license).is_none()
+            || self.tags.is_empty()
     }
 
     pub fn apply_wallhaven_details(&mut self, d: &WallhavenDetails) {

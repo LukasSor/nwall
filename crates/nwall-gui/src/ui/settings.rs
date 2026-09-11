@@ -4,12 +4,12 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{
-    Align, Box as GtkBox, Button, CheckButton, DropDown, Entry, FileDialog, Grid, Label,
+    Align, Box as GtkBox, Button, CheckButton, DropDown, Entry, Grid, Label,
     Orientation, PasswordEntry, PolicyType, ScrolledWindow, SpinButton, StringList, Switch,
 };
 use nwall_catalog as catalog;
 use nwall_ipc::{client_request, default_config_path, is_library_source, normalize_preview_width_pct,
-    resolve_catalog_source, CatalogSource, Config, FitMode, PausePolicy, Request, Response,
+    resolve_catalog_source, Config, FitMode, PausePolicy, Request,
     Slideshow,
 };
 

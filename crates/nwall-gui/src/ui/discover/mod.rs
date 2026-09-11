@@ -2,17 +2,17 @@
 mod filters;
 pub(crate) mod thumbs;
 
-pub(crate) use filters::{build_discover_filters, DiscoverFilters};
+pub(crate) use filters::build_discover_filters;
 pub(crate) use thumbs::{
-    apply_video_tile_still, bind_remote_image_thumb_prio, bind_remote_video_still,
+    bind_remote_image_thumb_prio, bind_remote_video_still,
     bump_remote_thumb_gen, make_fixed_thumb, pack_tile, refresh_remote_tile_still,
     refresh_remote_tile_still_if_missing, refresh_remote_tile_texture_if_missing,
-    remote_still_path, remote_tile_needs_still, remote_thumb_gen,
+    remote_still_path, remote_tile_needs_still,
 };
-pub(crate) use crate::ui::preview::{bind_thumb, file_nonempty, thumbs_dir};
+pub(crate) use crate::ui::preview::{bind_thumb, file_nonempty};
 
 use std::cell::{Cell, RefCell};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -22,38 +22,30 @@ use adw::prelude::*;
 use glib::object::SendWeakRef;
 use gtk::prelude::EditableExt;
 use gtk::{
-    gdk, gio, glib, Align, Box as GtkBox, Button, DropDown, Entry, EventControllerFocus,
-    EventControllerKey, FlowBox, FlowBoxChild, InputPurpose, Label, Orientation, Overlay, Paned,
-    Picture, PolicyType, ScrolledWindow, Spinner, Stack, StringList, Switch,
+    gdk, glib, Align, Box as GtkBox, Button, DropDown, Entry, EventControllerFocus,
+    EventControllerKey, FlowBox, FlowBoxChild, InputPurpose, Label, Orientation, Paned, ScrolledWindow, Spinner, Stack, StringList,
 };
 use nwall_catalog as catalog;
 use nwall_ipc::{
-    client_request, config_dir, default_config_path, is_audio, is_image, is_video, CatalogSource,
-    Config, Request, Response,
+    default_config_path, is_video, CatalogSource,
+    Config,
 };
 
 use crate::app::{
-    fire_source_watchers, replace_string_list, visible_catalog_sources, watch_sources, SourceWatchers,
+    replace_string_list, visible_catalog_sources, watch_sources, SourceWatchers,
 };
-use crate::consts::*;
-use crate::ipc_util::{apply_wallpaper, ipc_ok, push_playback};
+use crate::ipc_util::apply_wallpaper;
 use crate::ui::gallery::{compact_flow, gallery_dirs, kind_badge, refresh_gallery};
-use crate::ui::monitors::{fill_monitor_bar, refresh_monitor_mocks};
 use crate::ui::preview::{
-    apply_sidebar_pct, arm_preview_loading, bind_preview_host_size,
-    bind_preview_split, fill_sidebar_button, fit_preview_still, hide_preview_loading,
-    make_fixed_preview, make_preview_split, new_preview_sidebar, persist_show_monitors,
+    arm_preview_loading, bind_preview_host_size, fill_sidebar_button, fit_preview_still, hide_preview_loading,
+    make_fixed_preview, make_preview_split, new_preview_sidebar,
     preview_caption_label, preview_section_label, preview_sidebar_head, preview_stats_scroll,
-    preview_title, reset_preview_aspect, set_preview_title, show_preview, start_live_preview,
-    stop_live_preview, PreviewLoading, PreviewSession,
+    preview_title, reset_preview_aspect, set_preview_title, start_live_preview,
+    stop_live_preview, PreviewSession,
 };
 use crate::ui::stats::{
-    apply_stats_widgets, apply_archive_details_to_tile, apply_github_details_to_tile,
+    apply_archive_details_to_tile, apply_github_details_to_tile,
     apply_wallhaven_details_to_tile, enrich_wallhaven_tiles, make_stats_pane, schedule_local_stats,
-    StatsPane,
-};
-use crate::widgets::{
-    labeled_row, preview_option_row, set_video_playback_rows_visible, spin_with_percent,
 };
 
 use self::filters::persist_discover_filters;

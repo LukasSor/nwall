@@ -8,12 +8,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use adw::prelude::*;
 use glib::object::SendWeakRef;
 use gtk::{
-    glib, Align, Box as GtkBox, FlowBox, FlowBoxChild, Image, Label, Orientation, Overlay, Picture,
+    glib, Align, Box as GtkBox, FlowBox, FlowBoxChild, Image, Label, Orientation,
     SelectionMode,
 };
 use nwall_catalog as catalog;
 use nwall_ipc::{
-    client_request, is_image, is_library_source, is_video, OutputStatus, Request, Response,
+    client_request, is_image, is_video, OutputStatus, Request, Response,
 };
 
 use crate::consts::*;

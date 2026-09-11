@@ -1,23 +1,22 @@
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use adw::prelude::*;
 use glib::object::SendWeakRef;
 use gtk::{
-    gdk, gio, glib, Align, Box as GtkBox, FlowBox, FlowBoxChild, Label, LinkButton, Orientation,
-    Picture, PolicyType, ScrolledWindow,
+    gdk, gio, glib, Align, Box as GtkBox, FlowBox, FlowBoxChild, Grid, Label, Orientation, Overlay,
 };
 use nwall_catalog as catalog;
 use nwall_ipc::{is_video};
 
 use crate::consts::*;
 use crate::ui::discover::remote_child_item;
-use crate::ui::preview::{file_nonempty, set_preview_title};
+use crate::ui::preview::{apply_sidebar_wrap, file_nonempty, set_preview_title};
 
 #[derive(Clone)]
 pub(crate) struct StatsPane {
@@ -38,11 +37,13 @@ impl StatsPane {
         root.set_hexpand(true);
         root.set_vexpand(false);
         root.set_valign(Align::Start);
+        root.set_overflow(gtk::Overflow::Visible);
         root.add_css_class("preview-stats");
 
         let content = GtkBox::new(Orientation::Vertical, 14);
         content.set_hexpand(true);
         content.set_valign(Align::Start);
+        content.set_overflow(gtk::Overflow::Visible);
         content.add_css_class("preview-stats-content");
         root.append(&content);
         root.set_visible(true);
@@ -95,129 +96,257 @@ pub(crate) fn stats_section_header(title: &str) -> Label {
     let header = Label::new(Some(title));
     header.add_css_class("stats-section-title");
     header.set_halign(Align::Start);
+    header.set_hexpand(true);
     header.set_xalign(0.0);
-    header.set_hexpand(false);
+    header.set_justify(gtk::Justification::Left);
+    header.set_wrap(false);
+    header.set_single_line_mode(true);
+    header.set_ellipsize(gtk::pango::EllipsizeMode::None);
+    header.set_max_width_chars(-1);
     header
 }
 
-pub(crate) fn stats_prop_label(text: &str, label_group: &gtk::SizeGroup) -> Label {
+pub(crate) fn stats_prop_label(text: &str) -> Label {
     let lbl = Label::new(Some(text));
     lbl.add_css_class("stats-prop-label");
-    lbl.add_css_class("dim-label");
     lbl.set_halign(Align::Start);
-    lbl.set_valign(Align::Center);
+    lbl.set_valign(Align::Start);
     lbl.set_xalign(0.0);
+    lbl.set_justify(gtk::Justification::Left);
     lbl.set_hexpand(false);
-    lbl.set_size_request(STATS_LABEL_W, -1);
-    lbl.set_wrap(true);
-    lbl.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    lbl.set_hexpand_set(true);
+    lbl.set_wrap(false);
+    lbl.set_single_line_mode(true);
     lbl.set_ellipsize(gtk::pango::EllipsizeMode::None);
-    label_group.add_widget(&lbl);
+    lbl.set_max_width_chars(-1);
     lbl
 }
 
-pub(crate) fn stats_section(title: &str) -> (GtkBox, GtkBox) {
-    let section = GtkBox::new(Orientation::Vertical, 4);
-    section.set_hexpand(true);
-    section.add_css_class("stats-section");
+const STATS_SECTION_GAP: i32 = 10;
 
-    let rows = GtkBox::new(Orientation::Vertical, 4);
+fn stats_table_grid() -> Grid {
+    let rows = Grid::new();
+    rows.set_column_spacing(STATS_COL_GAP);
+    rows.set_row_spacing(4);
     rows.set_hexpand(true);
+    rows.set_halign(Align::Fill);
+    rows.set_column_homogeneous(false);
+    rows.set_overflow(gtk::Overflow::Visible);
     rows.add_css_class("stats-section-rows");
-
-    section.append(&stats_section_header(title));
-    section.append(&rows);
-    (section, rows)
+    rows.add_css_class("stats-table");
+    rows
 }
 
-pub(crate) fn stats_prop_row(label: &str, value: &str, label_group: &gtk::SizeGroup) -> GtkBox {
-    stats_prop_row_inner(label, value, label_group)
+struct StatsTable {
+    root: GtkBox,
+    grid: Grid,
+    row: i32,
+    pending_header: Option<&'static str>,
+    labels: Vec<Label>,
 }
 
-pub(crate) fn stats_prop_row_wrapped(
-    label: &str,
-    value: &str,
-    label_group: &gtk::SizeGroup,
-) -> GtkBox {
-    stats_prop_row(label, value, label_group)
+impl StatsTable {
+    fn new() -> Self {
+        let root = GtkBox::new(Orientation::Vertical, 4);
+        root.set_hexpand(true);
+        root.set_halign(Align::Fill);
+        root.set_valign(Align::Start);
+        Self {
+            root,
+            grid: stats_table_grid(),
+            row: 0,
+            pending_header: None,
+            labels: Vec::new(),
+        }
+    }
+
+    fn section(&mut self, title: &'static str) {
+        self.pending_header = Some(title);
+    }
+
+    fn finish_grid(&mut self) {
+        if self.row == 0 {
+            return;
+        }
+        self.root.append(&self.grid);
+        self.grid = stats_table_grid();
+        self.row = 0;
+    }
+
+    fn flush_header(&mut self) {
+        let Some(title) = self.pending_header.take() else {
+            return;
+        };
+        self.finish_grid();
+        let header = stats_section_header(title);
+        if self.root.first_child().is_some() {
+            header.set_margin_top(STATS_SECTION_GAP);
+        }
+        self.root.append(&header);
+    }
+
+    fn append_prop(&mut self, label: &str, value: Option<String>) -> bool {
+        let Some(v) = value.filter(|s| !s.trim().is_empty()) else {
+            return false;
+        };
+        self.flush_header();
+        self.attach_stats_value(label, &stats_prop_value(v.trim()));
+        true
+    }
+
+    fn attach_value(&mut self, label: &str, value: &impl IsA<gtk::Widget>) {
+        self.flush_header();
+        self.attach_stats_value(label, value);
+    }
+
+    fn attach_stats_value(&mut self, label: &str, value: &impl IsA<gtk::Widget>) {
+        let lbl = stats_prop_label(label);
+        self.labels.push(lbl.clone());
+        self.grid.attach(&lbl, 0, self.row, 1, 1);
+        value.set_hexpand(true);
+        value.set_hexpand_set(true);
+        value.set_halign(Align::Fill);
+        self.grid.attach(value, 1, self.row, 1, 1);
+        self.row += 1;
+    }
+
+    fn attach_full(&mut self, widget: &impl IsA<gtk::Widget>) {
+        self.flush_header();
+        self.finish_grid();
+        widget.set_hexpand(true);
+        widget.set_hexpand_set(true);
+        widget.set_halign(Align::Fill);
+        self.root.append(widget);
+    }
+
+    fn take(mut self) -> GtkBox {
+        self.finish_grid();
+        if !self.labels.is_empty() {
+            bind_stats_column_split(&self.root, self.labels);
+        }
+        self.root
+    }
 }
 
-pub(crate) fn stats_prop_row_inner(
-    label: &str,
-    value: &str,
-    label_group: &gtk::SizeGroup,
-) -> GtkBox {
-    let row = GtkBox::new(Orientation::Horizontal, 10);
-    row.set_hexpand(true);
-    row.set_halign(Align::Fill);
-    row.set_valign(Align::Start);
-    row.add_css_class("stats-prop-row");
+/// Column 0 width: `max(natural labels, sidebar_width/2 − gap/2)`.
+/// `sidebar_width` is the `preview-sidebar` allocation (`bind_preview_host_size`).
+fn stats_label_col_width(sidebar_w: i32, natural: i32, gap: i32) -> i32 {
+    let half = (sidebar_w / 2 - gap / 2).max(0);
+    natural.max(half)
+}
 
-    let val = Label::new(Some(value));
+fn natural_label_width(label: &Label) -> i32 {
+    let prev = label.width_request();
+    label.set_width_request(-1);
+    let (_, nat, _, _) = label.measure(gtk::Orientation::Horizontal, -1);
+    label.set_width_request(prev);
+    nat.max(1)
+}
+
+fn max_natural_label_width(labels: &[Label]) -> i32 {
+    labels.iter().map(natural_label_width).max().unwrap_or(1)
+}
+
+fn apply_stats_label_col(labels: &[Label], col0: i32) {
+    for lbl in labels {
+        if lbl.width_request() != col0 {
+            lbl.set_width_request(col0);
+        }
+    }
+}
+
+fn bind_stats_column_split(root: &GtkBox, labels: Vec<Label>) {
+    let labels = Rc::new(labels);
+    let last_w = Rc::new(Cell::new(0i32));
+    let apply = {
+        let labels = Rc::clone(&labels);
+        let last_w = Rc::clone(&last_w);
+        let root = root.clone();
+        Rc::new(move || {
+            let measured = stats_split_width(&root);
+            let width = if measured > 8 { measured } else { SIDEBAR_MIN };
+            if last_w.get() == width {
+                return;
+            }
+            last_w.set(width);
+            let nat = max_natural_label_width(&labels);
+            let col0 = stats_label_col_width(width, nat, STATS_COL_GAP as i32);
+            apply_stats_label_col(&labels, col0);
+        }) as Rc<dyn Fn()>
+    };
+
+    apply();
+
+    root.add_tick_callback({
+        let apply = Rc::clone(&apply);
+        move |_, _| {
+            apply();
+            glib::ControlFlow::Continue
+        }
+    });
+
+    root.connect_map({
+        let apply = Rc::clone(&apply);
+        move |root| {
+            hook_sidebar_width(root, SidebarWidthKind::Stats, &apply);
+            apply();
+        }
+    });
+}
+
+fn bind_stats_value_wrap(label: &Label) {
+    let last = Rc::new(Cell::new(0i32));
+    label.connect_notify_local(Some("width"), move |l, _| {
+        let width = l.width();
+        if width <= 8 || last.get() == width {
+            return;
+        }
+        last.set(width);
+        let chars = (width / 7).clamp(8, 96);
+        if l.max_width_chars() != chars {
+            l.set_max_width_chars(chars);
+        }
+    });
+}
+
+fn stats_prop_value(text: &str) -> Label {
+    let val = Label::new(Some(text));
     val.add_css_class("stats-prop-value");
-    val.set_halign(Align::Start);
+    val.set_selectable(true);
+    apply_sidebar_wrap(&val, false);
+    val.set_halign(Align::Fill);
     val.set_valign(Align::Start);
     val.set_xalign(0.0);
-    val.set_hexpand(true);
-    val.set_selectable(true);
-    val.set_wrap(true);
-    val.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-    val.set_ellipsize(gtk::pango::EllipsizeMode::None);
-
-    row.append(&{
-        let lbl = stats_prop_label(label, label_group);
-        lbl.set_valign(Align::Start);
-        lbl
-    });
-    row.append(&val);
-    row
+    val.set_justify(gtk::Justification::Left);
+    bind_stats_value_wrap(&val);
+    val
 }
 
-pub(crate) fn stats_link_row(url: &str, label_group: &gtk::SizeGroup) -> GtkBox {
-    let row = GtkBox::new(Orientation::Horizontal, 10);
-    row.set_hexpand(true);
-    row.set_halign(Align::Fill);
-    row.set_valign(Align::Start);
-    row.add_css_class("stats-prop-row");
-
+fn attach_stats_link(table: &mut StatsTable, url: &str) {
     let escaped = glib::markup_escape_text(url);
     let val = Label::new(None);
     val.set_markup(&format!("<a href=\"{escaped}\">Open page</a>"));
     val.add_css_class("stats-prop-value");
     val.add_css_class("preview-stats-link");
-    val.set_halign(Align::Start);
+    apply_sidebar_wrap(&val, false);
+    val.set_halign(Align::Fill);
     val.set_valign(Align::Start);
     val.set_xalign(0.0);
-    val.set_hexpand(true);
-    val.set_wrap(true);
-    val.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-    val.set_ellipsize(gtk::pango::EllipsizeMode::None);
-
-    row.append(&{
-        let lbl = stats_prop_label("Link", label_group);
-        lbl.set_valign(Align::Start);
-        lbl
-    });
-    row.append(&val);
-    row
+    val.set_justify(gtk::Justification::Left);
+    bind_stats_value_wrap(&val);
+    table.attach_value("Link", &val);
 }
 
-pub(crate) fn stats_uploader_row(
+fn attach_stats_uploader(
+    table: &mut StatsTable,
     label: &str,
     name: &str,
     avatar_url: Option<&str>,
     avatar_gen: &Arc<AtomicU64>,
-    label_group: &gtk::SizeGroup,
-) -> GtkBox {
-    let row = GtkBox::new(Orientation::Horizontal, 10);
-    row.set_hexpand(true);
-    row.set_halign(Align::Fill);
-    row.set_valign(Align::Start);
-    row.add_css_class("stats-prop-row");
-    row.add_css_class("stats-uploader-row");
-
+) {
     let avatar = adw::Avatar::new(AVATAR_PX, Some(name), true);
     avatar.add_css_class("uploader-avatar");
+    avatar.set_valign(Align::Start);
     let has_url = avatar_url.map(str::trim).is_some_and(|s| !s.is_empty());
     if has_url {
         bind_avatar(&avatar, avatar_url, avatar_gen);
@@ -225,110 +354,327 @@ pub(crate) fn stats_uploader_row(
         avatar.set_visible(true);
     }
 
-    let name_l = Label::new(Some(name));
-    name_l.add_css_class("stats-prop-value");
-    name_l.set_halign(Align::Start);
-    name_l.set_valign(Align::Start);
-    name_l.set_xalign(0.0);
-    name_l.set_hexpand(true);
-    name_l.set_wrap(true);
-    name_l.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-    name_l.set_ellipsize(gtk::pango::EllipsizeMode::None);
-    name_l.set_selectable(true);
+    let name_l = stats_prop_value(name);
 
     let value = GtkBox::new(Orientation::Horizontal, 8);
-    value.set_halign(Align::Start);
+    value.add_css_class("stats-uploader-row");
+    value.set_halign(Align::Fill);
     value.set_hexpand(true);
     value.set_valign(Align::Start);
     value.append(&avatar);
     value.append(&name_l);
-
-    row.append(&{
-        let lbl = stats_prop_label(label, label_group);
-        lbl.set_valign(Align::Start);
-        lbl
-    });
-    row.append(&value);
-    row
+    table.attach_value(label, &value);
 }
 
 pub(crate) fn stats_colors_block(hexes: &[&str]) -> GtkBox {
-    let section = GtkBox::new(Orientation::Vertical, 4);
-    section.set_hexpand(true);
-    section.add_css_class("stats-section");
-    section.add_css_class("stats-colors");
-
     let swatches = GtkBox::new(Orientation::Horizontal, 4);
     swatches.set_halign(Align::Start);
     swatches.set_hexpand(true);
+    swatches.add_css_class("stats-section");
+    swatches.add_css_class("stats-colors");
     swatches.add_css_class("color-swatches");
     swatches.add_css_class("stats-block-body");
     for hex in hexes {
         swatches.append(&color_swatch(hex));
     }
-
-    section.append(&stats_section_header("Colors"));
-    section.append(&swatches);
-    section
+    swatches
 }
 
 pub(crate) fn stats_tags_block(tags: &[String]) -> GtkBox {
-    let section = GtkBox::new(Orientation::Vertical, 4);
-    section.set_halign(Align::Fill);
-    section.set_hexpand(true);
-    section.add_css_class("stats-section");
-    section.add_css_class("stats-tags");
+    let cloud = GtkBox::new(Orientation::Vertical, TAG_ROW_GAP);
+    cloud.set_halign(Align::Fill);
+    cloud.set_hexpand(true);
+    cloud.set_hexpand_set(true);
+    cloud.set_valign(Align::Start);
+    cloud.set_vexpand(false);
+    cloud.set_overflow(gtk::Overflow::Visible);
+    cloud.add_css_class("stats-section");
+    cloud.add_css_class("stats-tags");
+    cloud.add_css_class("preview-tags-cloud");
+    cloud.add_css_class("stats-block-body");
 
-    let header = stats_section_header("Tags");
-
-    let tags_store = Label::new(Some(&tags.join("\n")));
-    tags_store.set_visible(false);
-
-    let tags_cloud = GtkBox::new(Orientation::Vertical, 4);
-    tags_cloud.set_halign(Align::Fill);
-    tags_cloud.set_hexpand(true);
-    tags_cloud.set_valign(Align::Start);
-    tags_cloud.set_vexpand(false);
-    tags_cloud.add_css_class("preview-tags-cloud");
-    tags_cloud.add_css_class("stats-block-body");
-
-    let last_tag_w = Rc::new(Cell::new(0i32));
-    {
-        let store = tags_store.clone();
-        let last_w = Rc::clone(&last_tag_w);
-        tags_cloud.add_tick_callback(move |cloud, _clock| {
-            let width = cloud.width();
-            if width < 32 || (last_w.get() - width).abs() <= 2 {
-                return glib::ControlFlow::Continue;
-            }
-            last_w.set(width);
-            reflow_tag_cloud(cloud, &tags_from_store(&store), width);
-            glib::ControlFlow::Continue
-        });
+    let chips: Vec<GtkBox> = tags.iter().map(|t| tag_chip(t)).collect();
+    for chip in &chips {
+        chip.set_halign(Align::Start);
     }
-
-    let w = tags_cloud.width();
-    if w >= 32 {
-        reflow_tag_cloud(&tags_cloud, tags, w);
-    }
-
-    section.append(&header);
-    section.append(&tags_store);
-    section.append(&tags_cloud);
-    section
+    bind_centered_tag_wrap(&cloud, chips);
+    cloud
 }
 
-pub(crate) fn append_prop(
-    rows: &GtkBox,
-    label: &str,
-    value: Option<String>,
-    label_group: &gtk::SizeGroup,
-) -> bool {
-    let Some(v) = value.filter(|s| !s.trim().is_empty()) else {
-        return false;
+fn tag_chip_label(chip: &GtkBox) -> Option<Label> {
+    chip.first_child()?.downcast::<Label>().ok()
+}
+
+fn tag_chip_width(chip: &GtkBox) -> i32 {
+    let (_, nat, _, _) = chip.measure(gtk::Orientation::Horizontal, -1);
+    nat.max(1)
+}
+
+fn apply_chip_width_limit(chips: &[GtkBox], width: i32) {
+    let chars = if width > 8 {
+        (width / 7).clamp(4, 80)
+    } else {
+        -1
     };
-    rows.append(&stats_prop_row(label, v.trim(), label_group));
-    true
+    for chip in chips {
+        let Some(label) = tag_chip_label(chip) else {
+            continue;
+        };
+        chip.set_size_request(-1, -1);
+        label.set_ellipsize(gtk::pango::EllipsizeMode::None);
+        label.set_max_width_chars(-1);
+        let nat = tag_chip_width(chip);
+        if width > 8 && nat > width {
+            label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            label.set_max_width_chars(chars);
+        }
+    }
+}
+
+fn nearest_css_class(start: &impl IsA<gtk::Widget>, class: &str) -> Option<gtk::Widget> {
+    let mut widget = Some(start.as_ref().clone());
+    while let Some(p) = widget {
+        if p.has_css_class(class) {
+            return Some(p);
+        }
+        widget = p.parent();
+    }
+    None
+}
+
+fn preview_sidebar_width(start: &impl IsA<gtk::Widget>) -> i32 {
+    // Same allocation `bind_preview_host_size` uses.
+    if let Some(side) = nearest_css_class(start, "preview-sidebar") {
+        let w = side.width();
+        if w > 8 {
+            return w;
+        }
+    }
+    0
+}
+
+fn stats_split_width(start: &impl IsA<gtk::Widget>) -> i32 {
+    let side = preview_sidebar_width(start);
+    if side > 8 {
+        return side;
+    }
+    let own = start.as_ref().width();
+    if own > 8 {
+        return own;
+    }
+    if let Some(scroll) = nearest_css_class(start, "preview-stats-scroll") {
+        let w = scroll.width();
+        if w > 8 {
+            return w;
+        }
+    }
+    0
+}
+
+fn tag_layout_width(start: &impl IsA<gtk::Widget>) -> i32 {
+    // Same allocation bind_preview_host_size uses, minus sidebar margins.
+    let side = preview_sidebar_width(start);
+    if side > 8 {
+        return (side - 24).max(8);
+    }
+    let own = start.as_ref().width();
+    if own > 8 {
+        return own;
+    }
+    if let Some(scroll) = nearest_css_class(start, "preview-stats-scroll") {
+        let w = scroll.width();
+        if w > 8 {
+            return w;
+        }
+    }
+    0
+}
+
+fn greedy_tag_row_counts(widths: &[i32], avail: i32, gap: i32) -> Vec<usize> {
+    let mut counts = Vec::new();
+    let mut row_w = 0;
+    let mut row_n = 0usize;
+    for &w in widths {
+        let need = if row_n == 0 { w } else { row_w + gap + w };
+        if row_n > 0 && need > avail {
+            counts.push(row_n);
+            row_w = w;
+            row_n = 1;
+        } else {
+            row_w = need;
+            row_n += 1;
+        }
+    }
+    if row_n > 0 {
+        counts.push(row_n);
+    }
+    counts
+}
+
+fn tag_row_counts(chips: &[GtkBox], width: i32, gap: i32) -> Vec<usize> {
+    let widths: Vec<i32> = chips.iter().map(tag_chip_width).collect();
+    greedy_tag_row_counts(&widths, width, gap)
+}
+
+fn chip_row_height(chips: &[GtkBox]) -> i32 {
+    chips
+        .first()
+        .map(|c| {
+            let (_, nat, _, _) = c.measure(gtk::Orientation::Vertical, -1);
+            nat.max(1)
+        })
+        .unwrap_or(1)
+}
+
+fn make_centered_tag_row(height: i32) -> (Overlay, GtkBox) {
+    let host = Overlay::new();
+    host.set_hexpand(true);
+    host.set_halign(Align::Fill);
+    host.set_valign(Align::Start);
+    host.set_overflow(gtk::Overflow::Visible);
+    host.add_css_class("preview-tags-row");
+
+    // Overlay chips are not measured, so row min-width stays ~0 and the
+    // paned can shrink. Height comes from this sizer only.
+    let sizer = GtkBox::new(Orientation::Horizontal, 0);
+    sizer.set_hexpand(true);
+    sizer.set_halign(Align::Fill);
+    sizer.set_size_request(0, height);
+    host.set_child(Some(&sizer));
+
+    let row = GtkBox::new(Orientation::Horizontal, TAG_ROW_GAP);
+    row.set_halign(Align::Center);
+    row.set_valign(Align::Center);
+    row.set_hexpand(false);
+    host.add_overlay(&row);
+    host.set_measure_overlay(&row, false);
+    (host, row)
+}
+
+fn unparent_tag_chip(chip: &GtkBox) {
+    if let Some(parent) = chip.parent() {
+        if let Ok(row) = parent.downcast::<GtkBox>() {
+            row.remove(chip);
+        }
+    }
+}
+
+fn relayout_centered_tags(cloud: &GtkBox, chips: &[GtkBox], width: i32) {
+    apply_chip_width_limit(chips, width);
+    let counts = tag_row_counts(chips, width, TAG_ROW_GAP);
+    for chip in chips {
+        unparent_tag_chip(chip);
+    }
+    while let Some(child) = cloud.first_child() {
+        cloud.remove(&child);
+    }
+    let height = chip_row_height(chips);
+    let mut i = 0usize;
+    for n in &counts {
+        let (host, row) = make_centered_tag_row(height);
+        for _ in 0..*n {
+            row.append(&chips[i]);
+            i += 1;
+        }
+        cloud.append(&host);
+    }
+}
+
+fn bind_centered_tag_wrap(cloud: &GtkBox, chips: Vec<GtkBox>) {
+    if chips.is_empty() {
+        return;
+    }
+    let chips = Rc::new(chips);
+    let last_w = Rc::new(Cell::new(0i32));
+    let apply = {
+        let chips = Rc::clone(&chips);
+        let last_w = Rc::clone(&last_w);
+        let cloud = cloud.clone();
+        Rc::new(move || {
+            let measured = tag_layout_width(&cloud);
+            let width = if measured > 8 { measured } else { SIDEBAR_MIN };
+            if last_w.get() == width {
+                return;
+            }
+            last_w.set(width);
+            relayout_centered_tags(&cloud, &chips, width);
+            cloud.queue_resize();
+        }) as Rc<dyn Fn()>
+    };
+
+    apply();
+
+    cloud.add_tick_callback({
+        let apply = Rc::clone(&apply);
+        move |_, _| {
+            apply();
+            glib::ControlFlow::Continue
+        }
+    });
+
+    cloud.connect_map({
+        let apply = Rc::clone(&apply);
+        move |cloud| {
+            hook_sidebar_width(cloud, SidebarWidthKind::Tags, &apply);
+            apply();
+        }
+    });
+}
+
+enum SidebarWidthKind {
+    Tags,
+    Stats,
+}
+
+#[derive(Clone, Default)]
+struct SidebarWidthHooks {
+    tags: Option<Rc<dyn Fn()>>,
+    stats: Option<Rc<dyn Fn()>>,
+}
+
+fn hook_sidebar_width(widget: &impl IsA<gtk::Widget>, kind: SidebarWidthKind, apply: &Rc<dyn Fn()>) {
+    let Some(side) = nearest_css_class(widget, "preview-sidebar") else {
+        return;
+    };
+    let slot = sidebar_width_hooks(&side);
+    {
+        let mut hooks = slot.borrow_mut();
+        match kind {
+            SidebarWidthKind::Tags => hooks.tags = Some(Rc::clone(apply)),
+            SidebarWidthKind::Stats => hooks.stats = Some(Rc::clone(apply)),
+        }
+    }
+    let connect = unsafe { side.data::<bool>("nwall-sidebar-width-sig").is_none() };
+    if !connect {
+        return;
+    }
+    unsafe {
+        side.set_data("nwall-sidebar-width-sig", true);
+    }
+    let slot_n = Rc::clone(&slot);
+    side.connect_notify_local(Some("width"), move |_, _| {
+        let (tags, stats) = {
+            let hooks = slot_n.borrow();
+            (hooks.tags.clone(), hooks.stats.clone())
+        };
+        if let Some(run) = tags {
+            run();
+        }
+        if let Some(run) = stats {
+            run();
+        }
+    });
+}
+
+fn sidebar_width_hooks(side: &gtk::Widget) -> Rc<RefCell<SidebarWidthHooks>> {
+    unsafe {
+        if let Some(slot) = side.data::<Rc<RefCell<SidebarWidthHooks>>>("nwall-sidebar-width") {
+            return slot.as_ref().clone();
+        }
+        let slot = Rc::new(RefCell::new(SidebarWidthHooks::default()));
+        side.set_data("nwall-sidebar-width", slot.clone());
+        slot
+    }
 }
 
 pub(crate) fn stats_source_name(stats: &catalog::MediaStats) -> Option<String> {
@@ -414,124 +760,64 @@ pub(crate) fn apply_stats_widgets(
         content.remove(&ch);
     }
 
-    let label_group = gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal);
+    let mut table = StatsTable::new();
 
-    let (media_sec, media_rows) = stats_section("Media");
-    let mut media_n = 0usize;
+    table.section("Media");
     let resolution = match (stats.width, stats.height) {
         (Some(w), Some(h)) if w > 0 && h > 0 => Some(format!("{w}×{h}")),
         _ if pending => Some("…".into()),
         _ => None,
     };
-    if append_prop(&media_rows, "Resolution", resolution, &label_group) {
-        media_n += 1;
-    }
+    table.append_prop("Resolution", resolution);
     let size = stats
         .file_size
         .filter(|n| *n > 0)
         .map(catalog::human_bytes)
         .or_else(|| pending.then(|| "…".into()));
-    if append_prop(&media_rows, "Size", size, &label_group) {
-        media_n += 1;
-    }
+    table.append_prop("Size", size);
     let duration = stats
         .duration_secs
         .filter(|d| d.is_finite() && *d > 0.0)
         .map(catalog::format_duration);
-    if append_prop(&media_rows, "Duration", duration, &label_group) {
-        media_n += 1;
-    }
+    table.append_prop("Duration", duration);
     if let Some(fps) = stats.fps.filter(|f| *f > 0.0) {
-        if append_prop(
-            &media_rows,
-            "FPS",
-            Some(stats_fps_display(fps)),
-            &label_group,
-        ) {
-            media_n += 1;
-        }
+        table.append_prop("FPS", Some(stats_fps_display(fps)));
     }
     if let Some(t) = nonempty_gui(&stats.file_type) {
-        if append_prop(
-            &media_rows,
-            "Type",
-            Some(stats_short_type(t)),
-            &label_group,
-        ) {
-            media_n += 1;
-        }
-    }
-    if media_n > 0 {
-        content.append(&media_sec);
+        table.append_prop("Type", Some(stats_short_type(t)));
     }
 
-    let (source_sec, source_rows) = stats_section("Source");
-    let mut source_n = 0usize;
+    table.section("Source");
     let source = stats_source_name(stats);
-    if append_prop(&source_rows, "Source", source.clone(), &label_group) {
-        source_n += 1;
-    }
+    table.append_prop("Source", source.clone());
     if let Some(t) = nonempty_gui(&stats.title) {
         let skip = catalog::tag_caption(&stats.tags, 8).as_deref() == Some(t);
-        if !skip && append_prop(&source_rows, "Title", Some(t.to_string()), &label_group)
-        {
-            source_n += 1;
+        if !skip {
+            table.append_prop("Title", Some(t.to_string()));
         }
     }
-    if append_prop(
-        &source_rows,
-        "Credit",
-        stats_credit_display(stats, source.as_deref()),
-        &label_group,
-    ) {
-        source_n += 1;
-    }
+    table.append_prop("Credit", stats_credit_display(stats, source.as_deref()));
     if let Some(r) = nonempty_gui(&stats.repo) {
-        if append_prop(&source_rows, "Repo", Some(r.to_string()), &label_group) {
-            source_n += 1;
-        }
+        table.append_prop("Repo", Some(r.to_string()));
     }
     if nonempty_gui(&stats.repo).is_some() {
         if let Some(id) = nonempty_gui(&stats.source_id) {
-            if append_prop(&source_rows, "Path", Some(id.to_string()), &label_group) {
-                source_n += 1;
-            }
+            table.append_prop("Path", Some(id.to_string()));
         }
     }
     if let Some(u) = nonempty_gui(&stats.page_url) {
-        source_rows.append(&stats_link_row(u, &label_group));
-        source_n += 1;
-    }
-    if source_n > 0 {
-        content.append(&source_sec);
+        attach_stats_link(&mut table, u);
     }
 
-    let (details_sec, details_rows) = stats_section("Details");
-    let mut details_n = 0usize;
+    table.section("Details");
     if let Some(c) = nonempty_gui(&stats.category) {
-        if append_prop(
-            &details_rows,
-            "Category",
-            Some(catalog::title_case_ascii(c)),
-            &label_group,
-        ) {
-            details_n += 1;
-        }
+        table.append_prop("Category", Some(catalog::title_case_ascii(c)));
     }
     if let Some(p) = nonempty_gui(&stats.purity) {
-        if append_prop(
-            &details_rows,
-            "Purity",
-            Some(p.to_ascii_uppercase()),
-            &label_group,
-        ) {
-            details_n += 1;
-        }
+        table.append_prop("Purity", Some(p.to_ascii_uppercase()));
     }
     if let Some(n) = stats.views {
-        if append_prop(&details_rows, "Views", Some(n.to_string()), &label_group) {
-            details_n += 1;
-        }
+        table.append_prop("Views", Some(n.to_string()));
     }
     if let Some(n) = stats.favorites {
         let fav_label = if stats_source_name(stats)
@@ -542,67 +828,25 @@ pub(crate) fn apply_stats_widgets(
         } else {
             "Favorites"
         };
-        if append_prop(
-            &details_rows,
-            fav_label,
-            Some(n.to_string()),
-            &label_group,
-        ) {
-            details_n += 1;
-        }
+        table.append_prop(fav_label, Some(n.to_string()));
     }
     if let Some(n) = stats.downloads.filter(|n| *n > 0) {
-        if append_prop(
-            &details_rows,
-            "Downloads",
-            Some(n.to_string()),
-            &label_group,
-        ) {
-            details_n += 1;
-        }
+        table.append_prop("Downloads", Some(n.to_string()));
     }
     if let Some(n) = stats.comments.filter(|n| *n > 0) {
-        if append_prop(
-            &details_rows,
-            "Comments",
-            Some(n.to_string()),
-            &label_group,
-        ) {
-            details_n += 1;
-        }
+        table.append_prop("Comments", Some(n.to_string()));
     }
     if let Some(d) = nonempty_gui(&stats.date) {
-        if append_prop(&details_rows, "Date", Some(d.to_string()), &label_group) {
-            details_n += 1;
-        }
+        table.append_prop("Date", Some(d.to_string()));
     }
     if let Some(c) = nonempty_gui(&stats.collection) {
-        if append_prop(
-            &details_rows,
-            "Collection",
-            Some(c.to_string()),
-            &label_group,
-        ) {
-            details_n += 1;
-        }
+        table.append_prop("Collection", Some(c.to_string()));
     }
     if let Some(l) = nonempty_gui(&stats.license) {
-        if append_prop(
-            &details_rows,
-            "License",
-            Some(l.to_string()),
-            &label_group,
-        ) {
-            details_n += 1;
-        }
+        table.append_prop("License", Some(l.to_string()));
     }
     if let Some(d) = nonempty_gui(&stats.description) {
-        details_rows.append(&stats_prop_row_wrapped(
-            "Description",
-            d,
-            &label_group,
-        ));
-        details_n += 1;
+        table.append_prop("Description", Some(d.to_string()));
     }
     if let Some(name) = nonempty_gui(&stats.uploader) {
         let label = if nonempty_gui(&stats.repo).is_some() {
@@ -615,17 +859,13 @@ pub(crate) fn apply_stats_widgets(
         } else {
             "Uploader"
         };
-        details_rows.append(&stats_uploader_row(
+        attach_stats_uploader(
+            &mut table,
             label,
             name,
             stats.avatar.as_deref(),
             avatar_gen,
-            &label_group,
-        ));
-        details_n += 1;
-    }
-    if details_n > 0 {
-        content.append(&details_sec);
+        );
     }
 
     let colors: Vec<&str> = stats
@@ -636,7 +876,8 @@ pub(crate) fn apply_stats_widgets(
         .take(8)
         .collect();
     if !colors.is_empty() {
-        content.append(&stats_colors_block(&colors));
+        table.section("Colors");
+        table.attach_full(&stats_colors_block(&colors));
     }
 
     let tags: Vec<String> = stats
@@ -648,7 +889,13 @@ pub(crate) fn apply_stats_widgets(
         .map(|t| t.to_string())
         .collect();
     if !tags.is_empty() {
-        content.append(&stats_tags_block(&tags));
+        table.section("Tags");
+        table.attach_full(&stats_tags_block(&tags));
+    }
+
+    let body = table.take();
+    if body.first_child().is_some() {
+        content.append(&body);
     }
 
     content.set_visible(true);
@@ -656,19 +903,6 @@ pub(crate) fn apply_stats_widgets(
 
 pub(crate) fn nonempty_gui(s: &Option<String>) -> Option<&str> {
     s.as_deref().map(str::trim).filter(|s| !s.is_empty())
-}
-
-pub(crate) fn tags_from_store(store: &Label) -> Vec<String> {
-    let t = store.text();
-    if t.is_empty() {
-        Vec::new()
-    } else {
-        t.split('\n')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .collect()
-    }
 }
 
 pub(crate) fn tag_name_hash(name: &str) -> u32 {
@@ -728,7 +962,7 @@ pub(crate) fn tag_chip(text: &str) -> GtkBox {
     let (fr, fg, fb) = tag_fg_rgb((br, bg, bb));
     let chip = GtkBox::new(Orientation::Horizontal, 0);
     chip.add_css_class("preview-tag");
-    chip.set_halign(Align::Center);
+    chip.set_halign(Align::Start);
     chip.set_valign(Align::Center);
     chip.set_hexpand(false);
     chip.set_vexpand(false);
@@ -739,73 +973,33 @@ pub(crate) fn tag_chip(text: &str) -> GtkBox {
     l.set_halign(Align::Center);
     l.set_valign(Align::Center);
     l.set_hexpand(false);
+    l.set_wrap(false);
+    l.set_single_line_mode(true);
+    l.set_ellipsize(gtk::pango::EllipsizeMode::None);
+    l.set_max_width_chars(-1);
+    l.set_justify(gtk::Justification::Center);
     chip.append(&l);
 
+    let class = format!("nwall-tag-{:08x}", tag_name_hash(t));
     apply_local_css(
         &chip,
+        &class,
         &format!(
-            "box.preview-tag {{\n\
+            "box.preview-tag.{class} {{\n\
              background-color: rgba({br},{bg},{bb},0.62);\n\
              border-radius: 999px;\n\
              padding: 2px 9px;\n\
              border: none;\n\
             }}\n\
-             box.preview-tag label {{\n\
+             box.preview-tag.{class} label {{\n\
              color: rgba({fr},{fg},{fb},0.88);\n\
              font-size: 0.82em;\n\
              font-weight: 500;\n\
+             white-space: nowrap;\n\
             }}"
         ),
     );
     chip
-}
-
-pub(crate) fn new_tag_row() -> GtkBox {
-    let row = GtkBox::new(Orientation::Horizontal, TAG_ROW_GAP);
-    row.set_halign(Align::Start);
-    row.set_hexpand(true);
-    row.set_valign(Align::Center);
-    row.add_css_class("preview-tags-row");
-    row
-}
-
-pub(crate) fn reflow_tag_cloud(cloud: &GtkBox, tags: &[String], width: i32) {
-    while let Some(ch) = cloud.first_child() {
-        cloud.remove(&ch);
-    }
-    if tags.is_empty() {
-        return;
-    }
-    let inner = width.max(1);
-    let mut row = new_tag_row();
-    let mut row_w = 0;
-    let mut rows = 1usize;
-    for t in tags {
-        let chip = tag_chip(t);
-        let tw = chip.measure(Orientation::Horizontal, -1).1.max(8);
-        let need = if row_w == 0 {
-            tw
-        } else {
-            row_w + TAG_ROW_GAP + tw
-        };
-        if row_w > 0 && need > inner && rows < TAG_MAX_ROWS {
-            cloud.append(&row);
-            row = new_tag_row();
-            row_w = 0;
-            rows += 1;
-        } else if row_w > 0 && need > inner && rows >= TAG_MAX_ROWS {
-            break;
-        }
-        if row_w == 0 {
-            row_w = tw;
-        } else {
-            row_w += TAG_ROW_GAP + tw;
-        }
-        row.append(&chip);
-    }
-    if row.first_child().is_some() {
-        cloud.append(&row);
-    }
 }
 
 pub(crate) fn color_swatch(hex: &str) -> GtkBox {
@@ -819,10 +1013,15 @@ pub(crate) fn color_swatch(hex: &str) -> GtkBox {
     swatch.set_overflow(gtk::Overflow::Hidden);
     swatch.set_tooltip_text(Some(hex));
     if let Some((r, g, b)) = parse_css_hex(hex) {
+        let class = format!(
+            "nwall-swatch-{}",
+            hex.trim().trim_start_matches('#').to_ascii_lowercase()
+        );
         apply_local_css(
             &swatch,
+            &class,
             &format!(
-                "box.color-swatch {{\n\
+                "box.color-swatch.{class} {{\n\
                  min-width: 18px;\n\
                  min-height: 18px;\n\
                  background-color: rgb({r},{g},{b});\n\
@@ -848,12 +1047,30 @@ pub(crate) fn parse_css_hex(s: &str) -> Option<(u8, u8, u8)> {
     None
 }
 
-pub(crate) fn apply_local_css(widget: &impl IsA<gtk::Widget>, css: &str) {
-    let provider = gtk::CssProvider::new();
-    provider.load_from_string(css);
-    widget
-        .style_context()
-        .add_provider(&provider, gtk::STYLE_PROVIDER_PRIORITY_USER);
+thread_local! {
+    static LOCAL_CSS_PROVIDERS: RefCell<HashMap<String, gtk::CssProvider>> =
+        RefCell::new(HashMap::new());
+}
+
+pub(crate) fn apply_local_css(widget: &impl IsA<gtk::Widget>, class: &str, css: &str) {
+    widget.add_css_class(class);
+    LOCAL_CSS_PROVIDERS.with(|providers| {
+        let mut providers = providers.borrow_mut();
+        if let Some(provider) = providers.get(class) {
+            provider.load_from_string(css);
+            return;
+        }
+        let provider = gtk::CssProvider::new();
+        provider.load_from_string(css);
+        if let Some(display) = gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_USER,
+            );
+        }
+        providers.insert(class.to_string(), provider);
+    });
 }
 
 pub(crate) fn bind_avatar(avatar: &adw::Avatar, url: Option<&str>, gen: &Arc<AtomicU64>) {

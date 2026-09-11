@@ -8,7 +8,7 @@ use adw::prelude::*;
 use gtk::{
     gdk, glib, EventControllerKey, EventControllerScroll, SpinButton,
 };
-use nwall_ipc::{client_request, default_config_path, Config, Request};
+use nwall_ipc::{default_config_path, Config};
 
 use crate::consts::*;
 
@@ -189,6 +189,14 @@ pub(crate) fn load_builtin_css() {
             border-left: none;
             box-shadow: none;
         }
+        .preview-sidebar .heading,
+        .preview-sidebar .dim-label {
+            min-width: 0;
+        }
+        .preview-sidebar .stats-prop-label,
+        .preview-sidebar .stats-section-title {
+            min-width: max-content;
+        }
         .preview-split > separator {
             min-width: 1px;
             min-height: 1px;
@@ -201,13 +209,22 @@ pub(crate) fn load_builtin_css() {
         }
         .preview-stats-scroll {
             min-height: 120px;
+            min-width: 0;
         }
         .preview-stats {
             margin-top: 4px;
-            padding: 0 2px;
+            padding: 0 4px;
         }
         .preview-stats-content {
             margin: 0;
+            min-width: 0;
+        }
+        .preview-stats,
+        .stats-section,
+        .stats-section-rows,
+        .stats-table,
+        .stats-prop-row {
+            min-width: 0;
         }
         .stats-section-title {
             font-size: 0.68em;
@@ -216,23 +233,21 @@ pub(crate) fn load_builtin_css() {
             text-transform: uppercase;
             opacity: 0.78;
             margin: 0;
-            padding: 0;
-            min-height: 0;
+            padding: 0 2px;
         }
         .stats-prop-row {
             min-height: 0;
             padding: 0;
         }
+        .stats-prop-gap {
+            min-width: 0;
+        }
         .stats-prop-label {
             opacity: 0.58;
             margin: 0;
             padding: 0;
-            min-width: 118px;
             font-size: 0.92em;
-        }
-        .stats-prop-label,
-        .stats-prop-value {
-            white-space: normal;
+            white-space: nowrap;
         }
         .stats-prop-value {
             font-weight: 400;
@@ -240,6 +255,11 @@ pub(crate) fn load_builtin_css() {
             opacity: 0.95;
             margin: 0;
             padding: 0;
+            min-width: 0;
+            white-space: normal;
+        }
+        .stats-section-rows {
+            min-width: 0;
         }
         .preview-stats-link {
             margin: 0;
@@ -250,7 +270,9 @@ pub(crate) fn load_builtin_css() {
             padding: 0;
         }
         .stats-tags .preview-tags-cloud,
-        .stats-colors .color-swatches {
+        .stats-tags.preview-tags-cloud,
+        .stats-colors .color-swatches,
+        .stats-colors.color-swatches {
             margin-top: 0;
             margin-left: 0;
         }
@@ -319,9 +341,21 @@ pub(crate) fn load_builtin_css() {
         }
         .preview-tags-cloud {
             min-height: 0;
+            min-width: 0;
+        }
+        .preview-tags-cloud flowboxchild {
+            padding: 0;
+            margin: 0;
+            min-width: 0;
+            background: transparent;
+            box-shadow: none;
+            outline: none;
+            border: none;
         }
         .preview-tags-row {
-            min-height: 0;
+            min-width: 0;
+            margin: 0;
+            padding: 0;
         }
         box.preview-tag {
             border-radius: 999px;
@@ -332,6 +366,7 @@ pub(crate) fn load_builtin_css() {
             font-size: 0.82em;
             font-weight: 500;
             color: rgba(255, 255, 255, 0.88);
+            white-space: nowrap;
         }
         .preview-loading-layer {
             background-color: rgba(0, 0, 0, 0.38);

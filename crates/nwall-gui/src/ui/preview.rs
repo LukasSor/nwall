@@ -12,11 +12,11 @@ use std::time::{Duration, Instant};
 use adw::prelude::*;
 use glib::object::SendWeakRef;
 use gtk::{
-    gdk, gio, glib, Align, AspectFrame, Box as GtkBox, Button, ContentFit, FlowBoxChild, Label,
+    gdk, glib, Align, AspectFrame, Box as GtkBox, Button, ContentFit, FlowBoxChild, Label,
     Orientation, Overlay, Paned, Picture, PolicyType, ScrolledWindow, SpinButton, Spinner, Switch,
 };
 use nwall_catalog as catalog;
-use nwall_ipc::{client_request, config_dir, default_config_path, is_audio, is_image, is_video,
+use nwall_ipc::{client_request, default_config_path, is_video,
     normalize_preview_width_pct, Config, Request, Response,
 };
 
@@ -232,15 +232,43 @@ pub(crate) fn preview_section_label() -> Label {
     l
 }
 
+pub(crate) fn apply_sidebar_wrap(label: &Label, center: bool) {
+    label.set_wrap(true);
+    label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    label.set_natural_wrap_mode(gtk::NaturalWrapMode::None);
+    label.set_ellipsize(gtk::pango::EllipsizeMode::None);
+    label.set_max_width_chars(28);
+    label.set_hexpand(true);
+    label.set_halign(Align::Fill);
+    label.set_xalign(if center { 0.5 } else { 0.0 });
+    if center {
+        label.set_justify(gtk::Justification::Center);
+    }
+}
+
+pub(crate) fn bind_wrap_width(label: &Label, inset: i32) {
+    let last = Rc::new(Cell::new(0i32));
+    label.add_tick_callback(move |l, _| {
+        let Some(parent) = l.parent() else {
+            return glib::ControlFlow::Continue;
+        };
+        let width = (parent.width() - inset).max(0);
+        if width <= 8 || last.get() == width {
+            return glib::ControlFlow::Continue;
+        }
+        last.set(width);
+        let chars = (width / 7).clamp(8, 96);
+        if l.max_width_chars() != chars {
+            l.set_max_width_chars(chars);
+        }
+        glib::ControlFlow::Continue
+    });
+}
+
 pub(crate) fn preview_caption_label(text: &str, heading: bool) -> Label {
     let l = Label::new(Some(text));
-    l.set_wrap(true);
-    l.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-    l.set_justify(gtk::Justification::Center);
-    l.set_halign(Align::Center);
-    l.set_xalign(0.5);
-    l.set_ellipsize(gtk::pango::EllipsizeMode::None);
-    l.set_hexpand(true);
+    apply_sidebar_wrap(&l, true);
+    bind_wrap_width(&l, 0);
     if heading {
         l.add_css_class("heading");
     } else {
@@ -251,14 +279,8 @@ pub(crate) fn preview_caption_label(text: &str, heading: bool) -> Label {
 
 pub(crate) fn preview_title(text: &str) -> Label {
     let l = Label::new(Some(text));
-    l.set_wrap(true);
-    l.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-    l.set_lines(3);
-    l.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    l.set_justify(gtk::Justification::Center);
-    l.set_halign(Align::Center);
-    l.set_xalign(0.5);
-    l.set_hexpand(true);
+    apply_sidebar_wrap(&l, true);
+    bind_wrap_width(&l, 0);
     l.set_selectable(true);
     l.add_css_class("heading");
     l.set_tooltip_text(Some(text));
@@ -296,7 +318,7 @@ pub(crate) fn preview_stats_scroll(stats: &impl IsA<gtk::Widget>) -> ScrolledWin
         .child(stats)
         .hexpand(true)
         .vexpand(true)
-        .propagate_natural_width(true)
+        .propagate_natural_width(false)
         .build();
     // ScrolledWindow: size_request is min-height allocation floor.
     scroll.set_min_content_height(STATS_SCROLL_MIN);
@@ -418,8 +440,21 @@ pub(crate) fn bind_preview_host_size(sidebar: &GtkBox, host: &impl IsA<gtk::Widg
         if host.width_request() != -1 || host.height_request() != h {
             host.set_size_request(-1, h);
         }
+        queue_stats_tag_relayout(box_);
         glib::ControlFlow::Continue
     });
+}
+
+fn queue_stats_tag_relayout(sidebar: &GtkBox) {
+    let mut child = sidebar.first_child();
+    while let Some(c) = child {
+        let next = c.next_sibling();
+        if c.has_css_class("preview-stats-scroll") {
+            c.queue_allocate();
+            c.queue_resize();
+        }
+        child = next;
+    }
 }
 
 pub(crate) fn bind_preview_split(

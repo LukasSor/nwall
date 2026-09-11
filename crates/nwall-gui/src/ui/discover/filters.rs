@@ -9,11 +9,10 @@ use gtk::{
 };
 use nwall_catalog as catalog;
 use nwall_ipc::{
-    client_request, default_config_path, discover_filters, CatalogSource, Config,
-    DiscoverFiltersState, Request,
+    default_config_path, discover_filters, CatalogSource, Config,
+    DiscoverFiltersState,
 };
 
-use crate::app::{replace_string_list, visible_catalog_sources};
 use crate::consts::*;
 use crate::widgets::{check_row, filter_heading, filter_page_box, labeled_row};
 

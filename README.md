@@ -12,15 +12,15 @@ nwall is a wallpaper daemon and picker for the [niri](https://github.com/YaLTeR/
 
 ## Why it exists
 
-A video player on a layer-shell surface plays back fine on its own, but the desktop starts to stutter as soon as you move the mouse or drag a window. The compositor re-imports a full-size video frame every refresh, the hardware cursor loses its fast path, and everything skips. niri's Overview blur makes it worse when the animated surface sits in the backdrop.
+A video player on a layer-shell surface plays back fine on its own, but the desktop starts to stutter as soon as you move the mouse or drag a window. The compositor re-imports a full-size video frame every refresh, the hardware cursor loses its fast path, and everything skips. niri's Overview makes that worse unless playback pauses.
 
 nwall fixes that path instead of working around it:
 
 - ffmpeg decode is paced to the target FPS and scaled to the display size before it ever reaches the compositor
 - frames are presented through `wl_shm` + `wp_viewporter` on an opaque surface with no input region
 - the daemon waits on frame callbacks rather than flooding niri with commits
+- a single `nwall-live` layer-shell surface does the animation
 - playback smart-pauses on fullscreen, Overview, window drag, and when the wallpaper is fully covered
-- a static `nwall-backdrop` surface feeds Overview blur while a separate `nwall-live` surface does the animation
 
 ## Screenshots
 
@@ -86,6 +86,12 @@ cd nwall
 
 The installer is the recommended path. It builds the workspace, installs binaries into `~/.local/bin`, and merges niri layer rules into `~/.config/niri/config.kdl` inside a managed block that is safe to re-run.
 
+If `~/.local/bin` is not already in your shell PATH, add it with this command:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
 Running it with no flags opens an interactive menu that asks:
 
 - install / update, or uninstall
@@ -134,8 +140,7 @@ systemctl --user enable --now nwalld.service
 
 Then merge [docs/niri-layer-rules.kdl](docs/niri-layer-rules.kdl) into `~/.config/niri/config.kdl`:
 
-- `nwall-live` needs `place-within-backdrop false` — required for video to animate
-- `nwall-backdrop` needs `place-within-backdrop true` — this is what Overview blurs
+- `nwall-live` uses `place-within-backdrop true` so the wallpaper sits in the workspace backdrop (not behind chrome)
 - `layout { background-color "transparent" }` so the wallpaper shows through
 
 Skip the GUI crate if you only want the daemon and CLI.
@@ -286,7 +291,7 @@ url = "https://example.com/catalog.json"
 
 | Crate           | Role                                                                 |
 | --------------- | -------------------------------------------------------------------- |
-| `nwalld`        | Layer-shell daemon: decode, present, niri smart pause, optional tray |
+| `nwalld`        | One `nwall-live` layer-shell surface: decode, present, niri smart-pause, optional tray |
 | `nwall`         | CLI client, depends only on `nwall-ipc`                              |
 | `nwall-gui`     | GTK4 picker, Discover, settings                                      |
 | `nwall-ipc`     | Config types and the Unix-socket protocol                            |

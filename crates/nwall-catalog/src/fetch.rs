@@ -1,16 +1,8 @@
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, Context, Result};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use anyhow::{anyhow, Result};
 
-use nwall_ipc::{is_image, is_video, CatalogSource};
+use nwall_ipc::CatalogSource;
 use super::*;
 
 pub fn fetch_source(src: &CatalogSource, opts: &SearchOpts) -> Result<FetchResult> {

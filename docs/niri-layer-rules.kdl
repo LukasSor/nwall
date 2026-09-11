@@ -1,11 +1,6 @@
-// Live video must NOT use place-within-backdrop (freezes frames).
+// Live wallpaper in niri's backdrop (no extra nwall-backdrop layer); Overview uses smart-pause.
 layer-rule {
     match namespace="^nwall-live$"
-    place-within-backdrop false
-}
-
-layer-rule {
-    match namespace="^nwall-backdrop$"
     place-within-backdrop true
 }
 

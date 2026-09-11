@@ -1,16 +1,11 @@
-use std::collections::HashMap;
 use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{Condvar, Mutex, OnceLock};
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-use nwall_ipc::{cache_dir, hash_url, is_image, is_video, CatalogSource};
+use nwall_ipc::{cache_dir, hash_url, CatalogSource};
 use super::types::UA;
 use super::*;
 

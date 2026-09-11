@@ -1,21 +1,20 @@
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use adw::prelude::*;
 use glib::object::SendWeakRef;
 use gtk::{
-    gdk, glib, Align, Box as GtkBox, ContentFit, Fixed, FlowBox, FlowBoxChild, Frame, Label,
+    gdk, glib, Align, Box as GtkBox, ContentFit, FlowBoxChild, Frame, Label,
     Orientation, Overlay, Picture,
 };
-use nwall_ipc::{config_dir, is_image, is_video};
 
 use crate::consts::*;
 use crate::ui::preview::{
-    apply_tile_image, ensure_scaled_tile, ffmpeg_cmd, file_nonempty, fit_tile_still, kill_child_tree,
+    apply_tile_image, ensure_scaled_tile, ffmpeg_cmd, file_nonempty, fit_tile_still,
     purge_scaled_tile, scaled_tile_cache_path, thumbs_dir, wait_child_timeout,
 };
 use nwall_catalog as catalog;

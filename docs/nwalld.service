@@ -1,7 +1,7 @@
 [Unit]
 Description=nwall — niri-optimized wallpaper daemon
 PartOf=graphical-session.target
-After=graphical-session.target
+After=graphical-session.target niri.service
 
 [Service]
 Type=simple

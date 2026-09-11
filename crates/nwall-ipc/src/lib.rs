@@ -12,7 +12,6 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
 pub const LIVE_NAMESPACE: &str = "nwall-live";
-pub const BACKDROP_NAMESPACE: &str = "nwall-backdrop";
 
 pub fn socket_path() -> PathBuf {
     if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {

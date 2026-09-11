@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use adw::prelude::*;
 use glib::object::SendWeakRef;
 use gtk::{
-    gdk, glib, Align, Box as GtkBox, Button, ContentFit, Fixed, Label, Orientation, Overlay,
+    gdk, glib, Align, Box as GtkBox, ContentFit, Fixed, Label, Orientation, Overlay,
     Picture, ToggleButton,
 };
 use nwall_ipc::{

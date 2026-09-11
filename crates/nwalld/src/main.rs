@@ -25,7 +25,7 @@ use image::RgbaImage;
 use nwall_catalog as catalog;
 use nwall_ipc::{
     client_request, is_audio, is_image, is_video, socket_path, Config, FitMode,
-    OutputStatus, Request, Response, Status, BACKDROP_NAMESPACE, LIVE_NAMESPACE,
+    OutputStatus, Request, Response, Status, LIVE_NAMESPACE,
 };
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
@@ -165,13 +165,9 @@ struct OutputSurfaces {
     x: i32,
     y: i32,
     live: LayerSurface,
-    backdrop: LayerSurface,
     live_viewport: WpViewport,
-    backdrop_viewport: WpViewport,
     live_configured: bool,
-    backdrop_configured: bool,
     live_draw: SurfaceDraw,
-    backdrop_draw: SurfaceDraw,
     wallpaper: Option<PathBuf>,
     frozen: bool,
     image_committed: bool,
@@ -195,8 +191,6 @@ struct App {
     video_frames: HashMap<PathBuf, (u32, u32, Arc<Vec<u8>>)>,
     videos: HashMap<PathBuf, VideoPlayer>,
     video_draw: HashMap<PathBuf, SurfaceDraw>,
-    backdrop_rgba: Option<RgbaImage>,
-    backdrop_dirty: bool,
     niri: Option<NiriWatcher>,
     globally_frozen: bool,
     freeze_reason: Option<String>,
@@ -204,7 +198,6 @@ struct App {
     play_override_reason: Option<String>,
     drag_until: HashMap<String, Instant>,
     needs_live_redraw: bool,
-    backdrop_mapped: bool,
     exit: bool,
     present_ready: bool,
     present_wait_since: Option<Instant>,
@@ -374,8 +367,6 @@ fn main() -> Result<()> {
         video_frames: HashMap::new(),
         videos: HashMap::new(),
         video_draw: HashMap::new(),
-        backdrop_rgba: None,
-        backdrop_dirty: false,
         niri,
         globally_frozen: false,
         freeze_reason: None,
@@ -383,7 +374,6 @@ fn main() -> Result<()> {
         play_override_reason: None,
         drag_until: HashMap::new(),
         needs_live_redraw: false,
-        backdrop_mapped: false,
         exit: false,
         present_ready: true,
         present_wait_since: None,
@@ -525,17 +515,35 @@ fn main() -> Result<()> {
             for (id, output) in outs {
                 app.ensure_output(id, &output, &qh);
             }
-            if let Some(path) = initial.clone().or_else(|| app.config.wallpaper.clone()) {
-                if let Err(e) = app.set_wallpaper(path, Vec::new()) {
+            let Some(path) = initial.clone().or_else(|| app.config.wallpaper.clone()) else {
+                return TimeoutAction::Drop;
+            };
+            // Cold start: compositor outputs often arrive after the first tick.
+            if app.outputs.is_empty() {
+                return TimeoutAction::ToDuration(Duration::from_millis(100));
+            }
+            let needs_apply = app.outputs.iter().any(|(id, o)| {
+                let want = o.wallpaper.as_ref().unwrap_or(&path);
+                !app.image_cache.get(id).is_some_and(|(p, _)| p == want)
+            });
+            if !needs_apply {
+                return TimeoutAction::Drop;
+            }
+            match app.set_wallpaper(path, Vec::new()) {
+                Ok(()) => TimeoutAction::Drop,
+                Err(_) if app.outputs.is_empty() => {
+                    TimeoutAction::ToDuration(Duration::from_millis(100))
+                }
+                Err(e) => {
                     log::error!("initial wallpaper: {e:#}");
+                    TimeoutAction::Drop
                 }
             }
-            TimeoutAction::Drop
         })
         .map_err(|e| anyhow!("insert init timer: {e}"))?;
 
     log::info!(
-        "nwalld running (live=`{LIVE_NAMESPACE}`, backdrop=`{BACKDROP_NAMESPACE}`, socket={})",
+        "nwalld running (live=`{LIVE_NAMESPACE}`, socket={})",
         socket_path().display()
     );
 
@@ -937,7 +945,6 @@ impl App {
         self.video_frames.retain(|p, _| wanted_videos.contains(p));
 
         if let Some(rgba) = still {
-            self.backdrop_rgba = Some(render::make_backdrop(&rgba, 640, 2)?);
             for id in &matched {
                 self.image_cache.insert(*id, (path.clone(), rgba.clone()));
             }
@@ -951,7 +958,6 @@ impl App {
             }
         }
 
-        self.ensure_backdrops_drawn();
         self.resync_videos()?;
         self.sync_bg_music();
         self.sync_tray();
@@ -970,7 +976,6 @@ impl App {
         }
         log::info!("fps 0: still frame from {}", path.display());
         let rgba = load_video_still(&path)?;
-        self.backdrop_rgba = Some(render::make_backdrop(&rgba, 640, 2)?);
         let ids: Vec<u32> = self
             .outputs
             .iter()
@@ -987,7 +992,6 @@ impl App {
         self.needs_live_redraw = true;
         self.draw_lives();
         self.needs_live_redraw = true;
-        self.ensure_backdrops_drawn();
         Ok(())
     }
 
@@ -1079,9 +1083,6 @@ impl App {
 
         self.stop_all_decoders();
 
-        if let Some(rgba) = stills.values().next() {
-            self.backdrop_rgba = Some(render::make_backdrop(rgba, 640, 2)?);
-        }
         let ids: Vec<(u32, PathBuf)> = self
             .outputs
             .iter()
@@ -1102,12 +1103,143 @@ impl App {
         self.needs_live_redraw = true;
         self.draw_lives();
         self.needs_live_redraw = true;
-        self.ensure_backdrops_drawn();
         Ok(())
+    }
+
+    fn configured_wallpaper(&self, name: &str) -> Option<PathBuf> {
+        self.config
+            .outputs
+            .get(name)
+            .cloned()
+            .or_else(|| self.config.wallpaper.clone())
+    }
+
+    fn drop_output(&mut self, id: u32) {
+        if let Some(o) = self.outputs.remove(&id) {
+            log::info!("output {} gone", o.name);
+        }
+        // wl_output protocol ids are recycled; stale pixels would skip apply on the next add.
+        self.image_cache.remove(&id);
+    }
+
+    fn recreate_output_layers(
+        &mut self,
+        id: u32,
+        output: &wl_output::WlOutput,
+        qh: &QueueHandle<App>,
+    ) {
+        if !self.outputs.contains_key(&id) {
+            return;
+        }
+        let live = self.make_layer(output, LIVE_NAMESPACE, qh);
+        let vp = self.viewporter.get().expect("viewporter");
+        let live_viewport = vp.get_viewport(live.wl_surface(), qh, ());
+        if let Some(o) = self.outputs.get_mut(&id) {
+            o.live = live;
+            o.live_viewport = live_viewport;
+            o.live_configured = false;
+            o.live_draw = SurfaceDraw::new();
+            o.image_committed = false;
+            o.video_vp = None;
+            o.video_commits = 0;
+        }
+        self.needs_live_redraw = true;
+    }
+
+    fn apply_output_wallpaper(&mut self, id: u32) {
+        let Some(name) = self.outputs.get(&id).map(|o| o.name.clone()) else {
+            return;
+        };
+        let Some(path) = self.configured_wallpaper(&name) else {
+            return;
+        };
+
+        let assigned = self.outputs.get(&id).and_then(|o| o.wallpaper.clone());
+        let have_pixels = self.image_cache.get(&id).is_some_and(|(p, _)| p == &path);
+        if have_pixels && assigned.as_ref() == Some(&path) {
+            if let Some(o) = self.outputs.get_mut(&id) {
+                o.image_committed = false;
+                o.video_vp = None;
+            }
+            self.needs_live_redraw = true;
+            return;
+        }
+
+        if let Some(rgba) = self
+            .image_cache
+            .values()
+            .find(|(p, _)| p == &path)
+            .map(|(_, rgba)| rgba.clone())
+        {
+            self.image_cache.insert(id, (path.clone(), rgba));
+            if let Some(o) = self.outputs.get_mut(&id) {
+                o.wallpaper = Some(path);
+                o.image_committed = false;
+                o.video_vp = None;
+            }
+            self.needs_live_redraw = true;
+            if let Err(e) = self.resync_videos() {
+                log::warn!("output wallpaper: {e:#}");
+            }
+            return;
+        }
+
+        if let Err(e) = self.set_wallpaper(path, vec![name]) {
+            log::warn!("output wallpaper: {e:#}");
+        }
+    }
+
+    fn sync_output(&mut self, id: u32, output: &wl_output::WlOutput, qh: &QueueHandle<App>) {
+        if !self.outputs.contains_key(&id) {
+            self.ensure_output(id, output, qh);
+            return;
+        }
+
+        let info = self.output_state.info(output);
+        let name = info.as_ref().and_then(|i| i.name.clone());
+        let size = info
+            .as_ref()
+            .and_then(|i| i.logical_size)
+            .map(|(w, h)| (w as u32, h as u32));
+        let pos = info.as_ref().and_then(|i| i.logical_position);
+
+        let mut changed = false;
+        if let Some(o) = self.outputs.get_mut(&id) {
+            if let Some(name) = name {
+                if o.name != name {
+                    o.name = name;
+                    changed = true;
+                }
+            }
+            if let Some((w, h)) = size {
+                if o.width != w || o.height != h {
+                    o.width = w;
+                    o.height = h;
+                    changed = true;
+                }
+            }
+            if let Some((x, y)) = pos {
+                if o.x != x || o.y != y {
+                    o.x = x;
+                    o.y = y;
+                    changed = true;
+                }
+            }
+            if changed {
+                o.image_committed = false;
+                o.video_vp = None;
+            }
+        }
+        if !changed {
+            return;
+        }
+        self.needs_live_redraw = true;
+        self.apply_output_wallpaper(id);
     }
 
     fn ensure_output(&mut self, id: u32, output: &wl_output::WlOutput, qh: &QueueHandle<App>) {
         if self.outputs.contains_key(&id) {
+            self.apply_output_wallpaper(id);
             return;
         }
         let info = self.output_state.info(output);
@@ -1126,17 +1258,10 @@ impl App {
             .unwrap_or((0, 0));
 
         let live = self.make_layer(output, LIVE_NAMESPACE, qh);
-        let backdrop = self.make_layer(output, BACKDROP_NAMESPACE, qh);
         let vp = self.viewporter.get().expect("viewporter");
         let live_viewport = vp.get_viewport(live.wl_surface(), qh, ());
-        let backdrop_viewport = vp.get_viewport(backdrop.wl_surface(), qh, ());
 
-        let wallpaper = self
-            .config
-            .outputs
-            .get(&name)
-            .cloned()
-            .or_else(|| self.config.wallpaper.clone());
+        let wallpaper = self.configured_wallpaper(&name);
 
         log::info!("output {name} {width}x{height}");
         self.outputs.insert(
@@ -1149,13 +1274,9 @@ impl App {
                 x,
                 y,
                 live,
-                backdrop,
                 live_viewport,
-                backdrop_viewport,
                 live_configured: false,
-                backdrop_configured: false,
                 live_draw: SurfaceDraw::new(),
-                backdrop_draw: SurfaceDraw::new(),
                 wallpaper,
                 frozen: false,
                 image_committed: false,
@@ -1164,7 +1285,7 @@ impl App {
             },
         );
         self.needs_live_redraw = true;
-        self.backdrop_dirty = true;
+        self.apply_output_wallpaper(id);
     }
 
     fn make_layer(
@@ -1234,9 +1355,6 @@ impl App {
             if !pending_still {
                 self.needs_live_redraw = false;
             }
-        }
-        if self.backdrop_dirty {
-            self.ensure_backdrops_drawn();
         }
     }
 
@@ -1701,7 +1819,7 @@ impl App {
         const FROZEN: Duration = Duration::from_millis(32);
         const STATIC: Duration = Duration::from_millis(100);
 
-        if self.needs_live_redraw || !self.present_ready || self.backdrop_dirty {
+        if self.needs_live_redraw || !self.present_ready {
             return ACTIVE;
         }
         if self.videos.is_empty() {
@@ -1758,40 +1876,6 @@ impl App {
         }
     }
 
-    fn ensure_backdrops_drawn(&mut self) {
-        if self.backdrop_rgba.is_none() {
-            if let Err(e) = self.refresh_backdrop_from_live() {
-                log::debug!("backdrop still: {e:#}");
-                return;
-            }
-        }
-        let ready = self
-            .outputs
-            .values()
-            .any(|o| o.backdrop_configured && o.width > 0 && o.height > 0);
-        if !ready {
-            self.backdrop_dirty = true;
-            return;
-        }
-        self.draw_backdrops();
-        self.backdrop_mapped = true;
-        self.backdrop_dirty = false;
-    }
-
-    fn refresh_backdrop_from_live(&mut self) -> Result<()> {
-        if let Some((_, rgba)) = self.image_cache.values().next() {
-            self.backdrop_rgba = Some(render::make_backdrop(rgba, 640, 2)?);
-            return Ok(());
-        }
-        for (path, (w, h, bgra)) in &self.video_frames {
-            let rgba = rgba_from_bgra_frame(*w, *h, bgra)?;
-            self.backdrop_rgba = Some(render::make_backdrop(&rgba, 640, 2)?);
-            let _ = path;
-            return Ok(());
-        }
-        Err(anyhow!("no live frame to build overview backdrop"))
-    }
-
     fn draw_lives(&mut self) {
         let video_paths: Vec<PathBuf> = self.video_frames.keys().cloned().collect();
         for path in video_paths {
@@ -1837,9 +1921,7 @@ impl App {
             };
             let was_ready = self.present_ready;
             let with_frame = !requested_frame;
-            if let Err(e) =
-                self.draw_image_surface(id, true, &surface, &rgba, w, h, fit, with_frame)
-            {
+            if let Err(e) = self.draw_image_surface(id, &surface, &rgba, w, h, fit, with_frame) {
                 log::warn!("draw live: {e:#}");
             } else {
                 if with_frame {
@@ -1940,33 +2022,9 @@ impl App {
         Ok(())
     }
 
-    fn draw_backdrops(&mut self) {
-        let Some(rgba) = self.backdrop_rgba.clone() else {
-            return;
-        };
-        let keys: Vec<u32> = self.outputs.keys().copied().collect();
-        for id in keys {
-            let (w, h, surface) = {
-                let Some(o) = self.outputs.get(&id) else {
-                    continue;
-                };
-                if !o.backdrop_configured || o.width == 0 || o.height == 0 {
-                    continue;
-                }
-                (o.width, o.height, o.backdrop.wl_surface().clone())
-            };
-            if let Err(e) =
-                self.draw_image_surface(id, false, &surface, &rgba, w, h, FitMode::Cover, false)
-            {
-                log::warn!("draw backdrop: {e:#}");
-            }
-        }
-    }
-
     fn draw_image_surface(
         &mut self,
         output_id: u32,
-        live: bool,
         surface: &WlSurface,
         rgba: &RgbaImage,
         width: u32,
@@ -2006,11 +2064,8 @@ impl App {
             let Some(out) = self.outputs.get_mut(&output_id) else {
                 return Ok(());
             };
-            let (draw, viewport) = if live {
-                (&mut out.live_draw, &out.live_viewport)
-            } else {
-                (&mut out.backdrop_draw, &out.backdrop_viewport)
-            };
+            let draw = &mut out.live_draw;
+            let viewport = &out.live_viewport;
 
             let idx = match draw.acquire(&self.shm, buf_w, buf_h, STILL_SLOTS) {
                 Ok(i) => i,
@@ -2051,10 +2106,8 @@ impl App {
             surface.damage(0, 0, i32::MAX, i32::MAX);
             surface.commit();
         }
-        if live {
-            if let Some(out) = self.outputs.get_mut(&output_id) {
-                out.video_commits = 0;
-            }
+        if let Some(out) = self.outputs.get_mut(&output_id) {
+            out.video_commits = 0;
         }
         if with_frame {
             self.present_ready = false;
@@ -2132,24 +2185,11 @@ impl OutputHandler for App {
     fn update_output(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         output: wl_output::WlOutput,
     ) {
         let id = output.id().protocol_id();
-        if let Some(info) = self.output_state.info(&output) {
-            if let Some(o) = self.outputs.get_mut(&id) {
-                if let Some((w, h)) = info.logical_size {
-                    o.width = w as u32;
-                    o.height = h as u32;
-                    o.image_committed = false;
-                    self.needs_live_redraw = true;
-                }
-                if let Some((x, y)) = info.logical_position {
-                    o.x = x;
-                    o.y = y;
-                }
-            }
-        }
+        self.sync_output(id, &output, qh);
     }
 
     fn output_destroyed(
@@ -2159,12 +2199,24 @@ impl OutputHandler for App {
         output: wl_output::WlOutput,
     ) {
         let id = output.id().protocol_id();
-        self.outputs.remove(&id);
+        self.drop_output(id);
     }
 }
 
 impl LayerShellHandler for App {
-    fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {}
+    fn closed(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, layer: &LayerSurface) {
+        let mut recreate: Option<(u32, wl_output::WlOutput)> = None;
+        for (id, o) in &self.outputs {
+            if o.live.wl_surface() == layer.wl_surface() {
+                recreate = Some((*id, o._output.clone()));
+                break;
+            }
+        }
+        if let Some((id, output)) = recreate {
+            self.recreate_output_layers(id, &output, qh);
+            self.apply_output_wallpaper(id);
+        }
+    }
 
     fn configure(
         &mut self,
@@ -2189,16 +2241,6 @@ impl LayerShellHandler for App {
                 self.needs_live_redraw = true;
                 self.present_ready = true;
                 hints.push((o.live.clone(), o.width, o.height));
-            }
-            if o.backdrop.wl_surface() == layer.wl_surface() {
-                if w > 0 && h > 0 {
-                    o.width = w;
-                    o.height = h;
-                }
-                o.backdrop_configured = true;
-                self.backdrop_dirty = true;
-                self.needs_live_redraw = true;
-                hints.push((o.backdrop.clone(), o.width, o.height));
             }
         }
         for (surf, ow, oh) in hints {

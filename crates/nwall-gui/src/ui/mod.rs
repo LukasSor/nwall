@@ -11,26 +11,25 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use adw::prelude::*;
-use glib::object::SendWeakRef;
 use gtk::{
-    gdk, gio, glib, Align, Box as GtkBox, Button, CheckButton, DropDown, Entry, FileDialog,
+    gdk, gio, glib, Align, Box as GtkBox, Button, DropDown, Entry, FileDialog,
     FlowBox, HeaderBar, Image, Label, MenuButton, Orientation, Picture, PolicyType, Popover,
-    ScrolledWindow, SelectionMode, Separator, SpinButton, Stack, StackSwitcher, StringList,
-    Switch, ToggleButton,
+    ScrolledWindow, Separator, SpinButton, Stack, StackSwitcher, StringList,
+    Switch,
 };
 use nwall_catalog as catalog;
-use nwall_ipc::{client_request, config_dir, default_config_path, is_audio, is_image, is_library_source,
-    is_video, normalize_preview_width_pct, resolve_catalog_source, CatalogSource, Config, FitMode,
-    Request, Response,
+use nwall_ipc::{client_request, config_dir, default_config_path, is_audio,
+    is_video, normalize_preview_width_pct, Config, FitMode,
+    Request,
 };
 
 use crate::app::{
-    fire_source_watchers, replace_string_list, visible_catalog_sources, watch_sources, SourceWatchers,
+    fire_source_watchers, watch_sources, SourceWatchers,
 };
 use crate::consts::*;
 use crate::ipc_util::{apply_wallpaper, ipc_ok, push_playback};
@@ -39,7 +38,7 @@ use crate::theme::{
     lock_tile_selection_chrome,
 };
 use crate::widgets::{
-    labeled_row, preview_option_row, set_video_playback_rows_visible, spin_with_percent,
+    preview_option_row, set_video_playback_rows_visible, spin_with_percent,
 };
 
 use self::bg_music::open_archive_music_dialog;
@@ -55,11 +54,11 @@ use self::preview::{
     new_preview_sidebar,
     persist_interface, persist_show_monitors, preview_caption_label, preview_section_label,
     preview_sidebar_head, preview_stats_scroll, preview_title, refresh_bg_music_ui,
-    set_preview_title, show_preview, start_live_preview, stop_live_preview, PreviewLoading,
+    set_preview_title, show_preview, stop_live_preview, PreviewLoading,
     PreviewSession,
 };
 use self::settings::build_settings;
-use self::stats::{apply_stats_widgets, make_stats_pane, schedule_local_stats, StatsPane};
+use self::stats::{make_stats_pane, schedule_local_stats, StatsPane};
 
 pub(crate) fn build(app: &adw::Application) {
     let mut cfg = Config::load(&default_config_path()).unwrap_or_default();

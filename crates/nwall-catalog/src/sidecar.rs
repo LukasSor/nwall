@@ -1,16 +1,13 @@
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context, Result};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use anyhow::{Context, Result};
+use serde::Deserialize;
 
-use nwall_ipc::{is_image, is_video, CatalogSource};
+use nwall_ipc::is_video;
 use super::*;
 
 pub(crate) fn meta_cache_dir() -> PathBuf {
@@ -38,8 +35,12 @@ pub(crate) fn path_meta_key(path: &Path) -> String {
 }
 
 /// Write catalog stats next to the file and under `~/.cache/nwall/meta/`.
+/// Empty fields on a later save keep previously stored sidecar values.
 pub fn persist_remote_meta(item: &RemoteItem, dest: &Path) {
-    let stats = MediaStats::from_remote(item);
+    let mut stats = MediaStats::from_remote(item);
+    if let Some(existing) = load_path_meta(dest) {
+        stats.fill_from(&existing);
+    }
     write_stats_file(&sidecar_path(dest), &stats);
     write_stats_file(&meta_cache_file(&path_meta_key(dest)), &stats);
     if !item.url.is_empty() {
@@ -47,9 +48,18 @@ pub fn persist_remote_meta(item: &RemoteItem, dest: &Path) {
     }
 }
 
+/// Write library sidecar stats. Empty catalog fields keep the previous sidecar;
+/// background-music fields always use `stats` (including an explicit clear).
 pub fn persist_path_meta(path: &Path, stats: &MediaStats) {
-    write_stats_file(&sidecar_path(path), stats);
-    write_stats_file(&meta_cache_file(&path_meta_key(path)), stats);
+    let mut merged = stats.clone();
+    if let Some(existing) = load_path_meta(path) {
+        merged.fill_from(&existing);
+    }
+    merged.bg_music = stats.bg_music.clone();
+    merged.bg_music_volume = stats.bg_music_volume;
+    merged.bg_music_mute = stats.bg_music_mute;
+    write_stats_file(&sidecar_path(path), &merged);
+    write_stats_file(&meta_cache_file(&path_meta_key(path)), &merged);
 }
 
 pub(crate) fn looks_like_wallhaven_id(s: &str) -> bool {

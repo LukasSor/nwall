@@ -3,6 +3,16 @@ use std::path::Path;
 use nwall_ipc::CatalogSource;
 
 use super::*;
+use super::bing::{
+    bing_format_startdate, bing_id_from_urlbase, bing_item, bing_split_copyright, BingImage,
+};
+use super::github::{
+    github_blob_download_url, github_path_is_direct_child, github_size_looks_like_lfs_pointer,
+};
+use super::nasa::{
+    nasa_apod_page_url, nasa_file_type_from_url, nasa_item, nasa_youtube_watch_url, NasaApod,
+};
+use super::wallhaven::{wallhaven_remote_item, WallhavenTag, WallhavenUploader};
 
     fn wallhaven_item(name: &str, id: &str, w: u32, h: u32, cat: &str) -> RemoteItem {
         RemoteItem {
@@ -358,6 +368,214 @@ use super::*;
         let same = pick_library_dest(&dir, "alps-snow", "jpg", Some("aaaaaa"));
         assert_eq!(same, primary);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn persist_remote_meta_writes_and_keeps_sidecar_tags() {
+        let dir = std::env::temp_dir().join(format!(
+            "nwall-sidetags-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("sunset.jpg");
+        std::fs::write(&dest, b"img").unwrap();
+        let gh = RemoteItem {
+            name: "sunset.jpg".into(),
+            url: "https://raw.githubusercontent.com/o/r/sunset.jpg".into(),
+            repo: Some("o/r".into()),
+            id: Some("sunset.jpg".into()),
+            tags: vec!["wallpaper".into(), "nature".into()],
+            credit: Some("GitHub".into()),
+            ..Default::default()
+        };
+        persist_remote_meta(&gh, &dest);
+        let loaded = load_path_meta(&dest).expect("sidecar");
+        assert_eq!(loaded.tags, vec!["wallpaper", "nature"]);
+        assert_eq!(
+            display_caption(Some(&loaded), "sunset.jpg"),
+            "sunset.jpg"
+        );
+
+        let empty = RemoteItem {
+            name: "sunset.jpg".into(),
+            url: gh.url.clone(),
+            repo: Some("o/r".into()),
+            id: Some("sunset.jpg".into()),
+            credit: Some("GitHub".into()),
+            ..Default::default()
+        };
+        persist_remote_meta(&empty, &dest);
+        let kept = load_path_meta(&dest).expect("sidecar");
+        assert_eq!(kept.tags, vec!["wallpaper", "nature"]);
+
+        let pix = RemoteItem {
+            name: "lake".into(),
+            url: "https://pixabay.com/get/lake.jpg".into(),
+            tags: vec!["lake".into(), "alps".into(), "snow".into()],
+            credit: Some("Pixabay".into()),
+            ..Default::default()
+        };
+        persist_remote_meta(&pix, &dest);
+        let pix_loaded = load_path_meta(&dest).expect("sidecar");
+        assert_eq!(pix_loaded.tags, vec!["lake", "alps", "snow"]);
+        assert_eq!(
+            display_caption(Some(&pix_loaded), "sunset.jpg"),
+            "lake · alps · snow"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn discover_stats_item() -> RemoteItem {
+        RemoteItem {
+            name: "Aurora Loop".into(),
+            video: true,
+            url: "https://raw.githubusercontent.com/owner/repo/aurora.mp4".into(),
+            credit: Some("GitHub".into()),
+            id: Some("clips/aurora.mp4".into()),
+            width: Some(1920),
+            height: Some(1080),
+            category: Some("nature".into()),
+            file_size: Some(4_000_000),
+            purity: Some("sfw".into()),
+            uploader: Some("octocat".into()),
+            avatar: Some("https://github.com/octocat.png?size=64".into()),
+            date: Some("2024-01-15".into()),
+            collection: Some("featured".into()),
+            description: Some("Northern lights".into()),
+            downloads: Some(12),
+            views: Some(3400),
+            favorites: Some(88),
+            comments: Some(5),
+            page_url: Some("https://github.com/owner/repo/blob/HEAD/clips/aurora.mp4".into()),
+            colors: vec!["#112233".into(), "#aabbcc".into()],
+            repo: Some("owner/repo".into()),
+            license: Some("MIT".into()),
+            tags: vec!["aurora".into(), "night".into()],
+            duration_secs: Some(12.5),
+            file_type: Some("mp4".into()),
+            fps: Some(30.0),
+            ..Default::default()
+        }
+    }
+
+    fn assert_discover_stats(s: &MediaStats) {
+        assert_eq!(s.width, Some(1920));
+        assert_eq!(s.height, Some(1080));
+        assert_eq!(s.file_size, Some(4_000_000));
+        assert_eq!(s.duration_secs, Some(12.5));
+        assert_eq!(s.fps, Some(30.0));
+        assert_eq!(s.file_type.as_deref(), Some("mp4"));
+        assert_eq!(s.source.as_deref(), Some("GitHub"));
+        assert_eq!(s.title.as_deref(), Some("Aurora Loop"));
+        assert_eq!(s.credit.as_deref(), Some("GitHub"));
+        assert_eq!(s.repo.as_deref(), Some("owner/repo"));
+        assert_eq!(s.source_id.as_deref(), Some("clips/aurora.mp4"));
+        assert_eq!(
+            s.page_url.as_deref(),
+            Some("https://github.com/owner/repo/blob/HEAD/clips/aurora.mp4")
+        );
+        assert_eq!(s.category.as_deref(), Some("nature"));
+        assert_eq!(s.purity.as_deref(), Some("sfw"));
+        assert_eq!(s.views, Some(3400));
+        assert_eq!(s.favorites, Some(88));
+        assert_eq!(s.downloads, Some(12));
+        assert_eq!(s.comments, Some(5));
+        assert_eq!(s.date.as_deref(), Some("2024-01-15"));
+        assert_eq!(s.collection.as_deref(), Some("featured"));
+        assert_eq!(s.license.as_deref(), Some("MIT"));
+        assert_eq!(s.description.as_deref(), Some("Northern lights"));
+        assert_eq!(s.uploader.as_deref(), Some("octocat"));
+        assert_eq!(
+            s.avatar.as_deref(),
+            Some("https://github.com/octocat.png?size=64")
+        );
+        assert_eq!(s.colors, vec!["#112233", "#aabbcc"]);
+        assert_eq!(s.tags, vec!["aurora", "night"]);
+    }
+
+    #[test]
+    fn persist_remote_meta_keeps_all_discover_stats() {
+        let dir = std::env::temp_dir().join(format!(
+            "nwall-sidestats-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("aurora.mp4");
+        std::fs::write(&dest, b"vid").unwrap();
+
+        let item = discover_stats_item();
+        assert_discover_stats(&MediaStats::from_remote(&item));
+
+        persist_remote_meta(&item, &dest);
+        assert_discover_stats(&load_path_meta(&dest).expect("sidecar"));
+
+        let empty = RemoteItem {
+            name: "Aurora Loop".into(),
+            url: item.url.clone(),
+            repo: Some("owner/repo".into()),
+            id: Some("clips/aurora.mp4".into()),
+            credit: Some("GitHub".into()),
+            ..Default::default()
+        };
+        persist_remote_meta(&empty, &dest);
+        assert_discover_stats(&load_path_meta(&dest).expect("kept remote"));
+
+        persist_path_meta(
+            &dest,
+            &MediaStats {
+                title: Some("Aurora Loop".into()),
+                ..Default::default()
+            },
+        );
+        let still = load_path_meta(&dest).expect("kept path");
+        assert_discover_stats(&still);
+
+        let mut with_music = still.clone();
+        with_music.bg_music = Some(dir.join("track.mp3"));
+        with_music.bg_music_volume = Some(0.4);
+        with_music.bg_music_mute = Some(false);
+        persist_path_meta(&dest, &with_music);
+        let mus = load_path_meta(&dest).expect("music");
+        assert_discover_stats(&mus);
+        assert_eq!(mus.bg_music.as_deref(), Some(dir.join("track.mp3").as_path()));
+        assert_eq!(mus.bg_music_volume, Some(0.4));
+
+        let mut cleared = mus.clone();
+        cleared.bg_music = None;
+        cleared.bg_music_volume = None;
+        cleared.bg_music_mute = None;
+        persist_path_meta(&dest, &cleared);
+        let after = load_path_meta(&dest).expect("cleared music");
+        assert_discover_stats(&after);
+        assert!(after.bg_music.is_none());
+        assert!(after.bg_music_volume.is_none());
+        assert!(after.bg_music_mute.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn github_preview_complete_requires_tags() {
+        let mut it = RemoteItem {
+            name: "a.jpg".into(),
+            url: "https://raw.githubusercontent.com/o/r/a.jpg".into(),
+            repo: Some("o/r".into()),
+            uploader: Some("octocat".into()),
+            page_url: Some("https://github.com/o/r/blob/HEAD/a.jpg".into()),
+            license: Some("MIT".into()),
+            ..Default::default()
+        };
+        assert!(!github_preview_complete(&it));
+        it.tags = vec!["wallpaper".into()];
+        assert!(github_preview_complete(&it));
     }
 
     #[test]
