@@ -1,4 +1,3 @@
-
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -7,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use adw::prelude::*;
 use glib::object::SendWeakRef;
 use gtk::{
-    gdk, glib, Align, Box as GtkBox, ContentFit, Fixed, Label, Orientation, Overlay,
-    Picture, ToggleButton,
+    gdk, glib, Align, Box as GtkBox, ContentFit, Fixed, Label, Orientation, Overlay, Picture,
+    ToggleButton,
 };
 use nwall_ipc::{
     client_request, default_config_path, is_video, Config, OutputStatus, Request, Response,
@@ -25,7 +24,11 @@ pub(crate) struct MonitorMock {
 
 pub(crate) type MonitorMocks = Arc<Vec<MonitorMock>>;
 
-pub(crate) fn make_monitor_mock(o: &OutputStatus, wallpaper: Option<&Path>, scale: f64) -> (GtkBox, Picture) {
+pub(crate) fn make_monitor_mock(
+    o: &OutputStatus,
+    wallpaper: Option<&Path>,
+    scale: f64,
+) -> (GtkBox, Picture) {
     let col = GtkBox::new(Orientation::Vertical, 3);
     col.set_halign(Align::Center);
     let sw = ((o.width.max(1) as f64) * scale).round().clamp(28.0, 220.0) as i32;
@@ -74,7 +77,11 @@ pub(crate) fn make_monitor_mock(o: &OutputStatus, wallpaper: Option<&Path>, scal
     (col, pic)
 }
 
-pub(crate) fn wallpaper_for_output(name: &str, outputs: &[OutputStatus], cfg: &Config) -> Option<PathBuf> {
+pub(crate) fn wallpaper_for_output(
+    name: &str,
+    outputs: &[OutputStatus],
+    cfg: &Config,
+) -> Option<PathBuf> {
     outputs
         .iter()
         .find(|o| o.name == name)
@@ -150,8 +157,7 @@ pub(crate) fn fill_monitor_bar(bar: &GtkBox) -> (Rc<RefCell<Vec<String>>>, Monit
             let scale = (90.0 / max_h as f64).clamp(0.02, 0.2);
             let min_x = outputs.iter().map(|o| o.x).min().unwrap_or(0);
             let min_y = outputs.iter().map(|o| o.y).min().unwrap_or(0);
-            let use_map = outputs.len() > 1
-                && outputs.iter().any(|o| o.x != min_x || o.y != min_y);
+            let use_map = outputs.len() > 1 && outputs.iter().any(|o| o.x != min_x || o.y != min_y);
             if use_map {
                 let mut xs: Vec<i32> = outputs.iter().map(|o| o.x).collect();
                 xs.sort_unstable();
@@ -238,11 +244,7 @@ pub(crate) fn fill_monitor_bar(bar: &GtkBox) -> (Rc<RefCell<Vec<String>>>, Monit
         for (btn, _) in &chips_all {
             btn.set_active(on);
         }
-        *selected_a.borrow_mut() = if on {
-            names_a.clone()
-        } else {
-            Vec::new()
-        };
+        *selected_a.borrow_mut() = if on { names_a.clone() } else { Vec::new() };
         suppress_a.set(false);
     });
 
@@ -276,4 +278,3 @@ pub(crate) fn fill_monitor_bar(bar: &GtkBox) -> (Rc<RefCell<Vec<String>>>, Monit
     }
     (selected, Arc::new(mocks))
 }
-

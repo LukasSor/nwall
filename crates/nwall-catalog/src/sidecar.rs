@@ -7,11 +7,14 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use nwall_ipc::is_video;
 use super::*;
+use nwall_ipc::is_video;
 
 pub(crate) fn meta_cache_dir() -> PathBuf {
-    let dir = cache_dir().parent().map(|p| p.to_path_buf()).unwrap_or_else(cache_dir);
+    let dir = cache_dir()
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(cache_dir);
     let dir = dir.join("meta");
     let _ = std::fs::create_dir_all(&dir);
     dir
@@ -74,9 +77,17 @@ pub(crate) fn infer_wallhaven_id(path: &Path, stats: &MediaStats) -> Option<Stri
         return Some(id.to_string());
     }
     if let Some(u) = nonempty_opt(&stats.page_url) {
-        for prefix in ["https://whvn.cc/", "https://wallhaven.cc/w/", "http://whvn.cc/"] {
+        for prefix in [
+            "https://whvn.cc/",
+            "https://wallhaven.cc/w/",
+            "http://whvn.cc/",
+        ] {
             if let Some(rest) = u.strip_prefix(prefix) {
-                let id = rest.trim_matches('/').split(['?', '#']).next().unwrap_or("");
+                let id = rest
+                    .trim_matches('/')
+                    .split(['?', '#'])
+                    .next()
+                    .unwrap_or("");
                 if looks_like_wallhaven_id(id) {
                     return Some(id.to_string());
                 }
@@ -168,10 +179,9 @@ pub fn enrich_library_meta(path: &Path) -> Option<MediaStats> {
         }
     } else if nonempty_opt(&stats.repo).is_some() {
         if nonempty_opt(&stats.page_url).is_none() {
-            if let (Some(repo), Some(path)) = (
-                nonempty_opt(&stats.repo),
-                nonempty_opt(&stats.source_id),
-            ) {
+            if let (Some(repo), Some(path)) =
+                (nonempty_opt(&stats.repo), nonempty_opt(&stats.source_id))
+            {
                 stats.page_url = Some(format!(
                     "https://github.com/{repo}/blob/HEAD/{}",
                     percent_encode_path(path.trim_start_matches('/'))
@@ -489,7 +499,17 @@ pub(crate) fn jpeg_size(path: &Path) -> Option<(u32, u32)> {
         // SOF0–SOF3, SOF5–SOF7, SOF9–SOF11, SOF13–SOF15
         if matches!(
             marker,
-            0xC0 | 0xC1 | 0xC2 | 0xC3 | 0xC5 | 0xC6 | 0xC7 | 0xC9 | 0xCA | 0xCB | 0xCD | 0xCE
+            0xC0 | 0xC1
+                | 0xC2
+                | 0xC3
+                | 0xC5
+                | 0xC6
+                | 0xC7
+                | 0xC9
+                | 0xCA
+                | 0xCB
+                | 0xCD
+                | 0xCE
                 | 0xCF
         ) {
             let h = u16::from_be_bytes([buf[i + 5], buf[i + 6]]) as u32;
@@ -533,4 +553,3 @@ pub(crate) fn webp_size(data: &[u8]) -> Option<(u32, u32)> {
         _ => None,
     }
 }
-

@@ -4,10 +4,9 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
-use serde_json::Value;
 
-use nwall_ipc::{is_image, is_video, CatalogSource};
 use super::*;
+use nwall_ipc::{is_image, is_video, CatalogSource};
 
 /// True when `file_path` is a direct child of folder `path` (Contents-API semantics: no recursion).
 pub(crate) fn github_path_is_direct_child(file_path: &str, folder: &str) -> bool {
@@ -25,52 +24,34 @@ pub(crate) fn github_path_is_direct_child(file_path: &str, folder: &str) -> bool
     }
 }
 
-pub(crate) fn github_http_err(url: &str, err: ureq::Error) -> anyhow::Error {
-    match err {
-        ureq::Error::Status(code, resp) => {
-            let body = resp.into_string().unwrap_or_default();
-            let msg = serde_json::from_str::<Value>(&body)
-                .ok()
-                .and_then(|v| {
-                    v.get("message")
-                        .and_then(|m| m.as_str())
-                        .map(str::to_string)
-                })
-                .filter(|s| !s.is_empty())
-                .unwrap_or(body);
-            let lower = msg.to_ascii_lowercase();
-            if code == 403
-                && (lower.contains("rate limit") || lower.contains("secondary rate limit"))
-            {
-                anyhow!(
-                    "GitHub API rate limit exceeded. Add a PAT next to GitHub in Settings \
-                     (or set GITHUB_TOKEN / GH_TOKEN) for 5000 req/hr. ({msg})"
-                )
-            } else if code == 404 {
-                anyhow!("github {url}: not found (404)")
-            } else {
-                anyhow!("github {url}: HTTP {code}: {msg}")
-            }
-        }
-        other => anyhow!("github {url}: {other}"),
-    }
+pub(crate) fn github_api_get(url: &str, token: &str) -> Result<ureq::Response> {
+    github_api_get_class(url, token, RequestClass::Detail)
 }
 
-pub(crate) fn github_api_get(url: &str, token: &str) -> Result<ureq::Response> {
-    let mut req = github_agent()
-        .get(url)
-        .set("Accept", "application/vnd.github+json")
-        .set("X-GitHub-Api-Version", "2022-11-28");
-    let token = token.trim();
-    if !token.is_empty() {
-        req = req.set("Authorization", &format!("Bearer {token}"));
+pub(crate) fn github_api_get_class(
+    url: &str,
+    token: &str,
+    class: RequestClass,
+) -> Result<ureq::Response> {
+    let has_key = !token.trim().is_empty();
+    note_source_auth("github", has_key);
+    let mut headers = vec![
+        ("Accept", "application/vnd.github+json"),
+        ("X-GitHub-Api-Version", "2022-11-28"),
+    ];
+    let auth = if has_key {
+        Some(format!("Bearer {}", token.trim()))
+    } else {
+        None
+    };
+    if let Some(auth) = auth.as_deref() {
+        headers.push(("Authorization", auth));
     }
-    req.call().map_err(|e| github_http_err(url, e))
+    limited_get_headers(url, "github", class, has_key, &headers)
 }
 
 pub(crate) fn github_err_is_rate_limit(err: &anyhow::Error) -> bool {
-    let s = format!("{err:#}").to_ascii_lowercase();
-    s.contains("rate limit")
+    http_err_is_rate_limit(err)
 }
 
 pub(crate) fn fetch_github_source(src: &CatalogSource) -> Result<Vec<RemoteItem>> {
@@ -94,13 +75,13 @@ pub(crate) fn fetch_github_source(src: &CatalogSource) -> Result<Vec<RemoteItem>
         .filter_map(|r| by_repo.remove(&r).map(|paths| (r, paths)))
         .collect();
 
-    const CONCURRENCY: usize = GITHUB_LIST_CONCURRENCY;
+    let concurrency = source_list_concurrency("github", !token.trim().is_empty());
     let mut items = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut errors = Vec::new();
     let mut rate_limited = false;
 
-    for chunk in repos.chunks(CONCURRENCY) {
+    for chunk in repos.chunks(concurrency) {
         if rate_limited {
             break;
         }
@@ -151,11 +132,7 @@ pub(crate) fn fetch_github_source(src: &CatalogSource) -> Result<Vec<RemoteItem>
                 uniq.push(e);
             }
         }
-        return Err(anyhow!(
-            "github source '{}': {}",
-            src.name,
-            uniq.join("; ")
-        ));
+        return Err(anyhow!("github source '{}': {}", src.name, uniq.join("; ")));
     }
     if rate_limited {
         log::warn!(
@@ -170,7 +147,11 @@ pub(crate) fn fetch_github_source(src: &CatalogSource) -> Result<Vec<RemoteItem>
 }
 
 /// List media under configured folders for one repo (tree API, Contents fallback).
-pub(crate) fn fetch_github_repo(repo: &str, paths: &[String], token: &str) -> Result<Vec<RemoteItem>> {
+pub(crate) fn fetch_github_repo(
+    repo: &str,
+    paths: &[String],
+    token: &str,
+) -> Result<Vec<RemoteItem>> {
     let mut items = match fetch_github_via_tree(repo, paths, token) {
         Ok(items) => items,
         Err(e) if github_err_is_rate_limit(&e) => return Err(e),
@@ -224,19 +205,21 @@ pub(crate) fn fetch_github_via_tree(
         return Err(anyhow!("github source missing owner/repo"));
     }
     let api = format!("https://api.github.com/repos/{repo}/git/trees/HEAD?recursive=1");
-    let tree: GhTree = match github_api_get(&api, token) {
+    let tree: GhTree = match github_api_get_class(&api, token, RequestClass::Listing) {
         Ok(resp) => resp.into_json().context("github tree json")?,
-        Err(e) if format!("{e:#}").contains("504") || format!("{e:#}").contains("timeout") => {
+        Err(e) if http_err_is_timeout(&e) => {
             log::warn!("github tree {repo}: {e:#}; retrying once");
             std::thread::sleep(Duration::from_millis(500));
-            github_api_get(&api, token)?
+            github_api_get_class(&api, token, RequestClass::Listing)?
                 .into_json()
                 .context("github tree json")?
         }
         Err(e) => return Err(e),
     };
     if tree.truncated {
-        return Err(anyhow!("github tree for {repo} truncated; use Contents fallback"));
+        return Err(anyhow!(
+            "github tree for {repo} truncated; use Contents fallback"
+        ));
     }
 
     let folder_set: Vec<String> = paths
@@ -282,11 +265,7 @@ pub(crate) fn fetch_github_via_tree(
             credit: Some("GitHub".into()),
             id: Some(e.path.clone()),
             repo: Some(repo.to_string()),
-            file_size: if lfs {
-                None
-            } else {
-                e.size.filter(|n| *n > 0)
-            },
+            file_size: if lfs { None } else { e.size.filter(|n| *n > 0) },
             file_type,
             page_url: Some(format!(
                 "https://github.com/{repo}/blob/HEAD/{}",
@@ -298,7 +277,11 @@ pub(crate) fn fetch_github_via_tree(
     Ok(items)
 }
 
-pub(crate) fn fetch_github_contents(repo: &str, path: &str, token: &str) -> Result<Vec<RemoteItem>> {
+pub(crate) fn fetch_github_contents(
+    repo: &str,
+    path: &str,
+    token: &str,
+) -> Result<Vec<RemoteItem>> {
     if repo.is_empty() {
         return Err(anyhow!("github source missing owner/repo"));
     }
@@ -310,7 +293,7 @@ pub(crate) fn fetch_github_contents(repo: &str, path: &str, token: &str) -> Resu
             percent_encode_path(path)
         )
     };
-    let entries: Vec<GhEntry> = github_api_get(&api, token)?
+    let entries: Vec<GhEntry> = github_api_get_class(&api, token, RequestClass::Listing)?
         .into_json()
         .context("github json")?;
     let mut items = Vec::new();
@@ -349,11 +332,7 @@ pub(crate) fn fetch_github_contents(repo: &str, path: &str, token: &str) -> Resu
             credit: Some("GitHub".into()),
             id: Some(repo_path.clone()),
             repo: Some(repo.to_string()),
-            file_size: if lfs {
-                None
-            } else {
-                e.size.filter(|n| *n > 0)
-            },
+            file_size: if lfs { None } else { e.size.filter(|n| *n > 0) },
             file_type,
             page_url: Some(format!(
                 "https://github.com/{repo}/blob/HEAD/{}",
@@ -393,4 +372,3 @@ pub(crate) struct GhEntry {
     #[serde(default)]
     size: Option<u64>,
 }
-

@@ -1,4 +1,3 @@
-
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,8 +7,8 @@ use std::time::Duration;
 use adw::prelude::*;
 use glib::object::SendWeakRef;
 use gtk::{
-    gdk, glib, Align, Box as GtkBox, ContentFit, FlowBoxChild, Frame, Label,
-    Orientation, Overlay, Picture,
+    gdk, glib, Align, Box as GtkBox, ContentFit, FlowBoxChild, Frame, Label, Orientation, Overlay,
+    Picture,
 };
 
 use crate::consts::*;
@@ -209,8 +208,26 @@ pub(crate) fn bind_remote_image_thumb_prio(pic: &Picture, url: &str, priority: b
     let _ = remote_thumb_tx().send(RemoteThumbJob {
         url: url.to_string(),
         dest,
-        pic: SendWeakRef::from(pic.downgrade()),
+        pic: Some(SendWeakRef::from(pic.downgrade())),
         priority,
+        gen,
+    });
+}
+
+pub(crate) fn prefetch_remote_image_thumb(url: &str) {
+    if url.trim().is_empty() {
+        return;
+    }
+    let dest = catalog::cached_path(url, "thumb");
+    if file_nonempty(&dest) {
+        return;
+    }
+    let gen = remote_thumb_gen().load(Ordering::Relaxed);
+    let _ = remote_thumb_tx().send(RemoteThumbJob {
+        url: url.to_string(),
+        dest,
+        pic: None,
+        priority: false,
         gen,
     });
 }
@@ -218,7 +235,7 @@ pub(crate) fn bind_remote_image_thumb_prio(pic: &Picture, url: &str, priority: b
 pub(crate) struct RemoteThumbJob {
     url: String,
     dest: PathBuf,
-    pic: SendWeakRef<Picture>,
+    pic: Option<SendWeakRef<Picture>>,
     priority: bool,
     gen: u64,
 }
@@ -289,7 +306,7 @@ pub(crate) fn remote_thumb_tx() -> std::sync::mpsc::Sender<RemoteThumbJob> {
                         if gen != remote_thumb_gen().load(Ordering::Relaxed) {
                             return;
                         }
-                        if let (Some(p), Some(path)) = (pic.upgrade(), scaled) {
+                        if let (Some(p), Some(path)) = (pic.and_then(|p| p.upgrade()), scaled) {
                             let _ = fit_tile_still(&p, &path);
                         }
                     });
@@ -366,16 +383,46 @@ pub(crate) fn bind_remote_video_still(child: &FlowBoxChild, url: &str, priority:
     let _ = remote_still_tx().send(RemoteStillJob {
         url: url.to_string(),
         dest,
-        child: SendWeakRef::from(child.downgrade()),
+        child: Some(SendWeakRef::from(child.downgrade())),
         priority,
         gen,
     });
 }
 
+pub(crate) fn prefetch_remote_video_still(url: &str) {
+    if url.trim().is_empty() {
+        return;
+    }
+    let dest = remote_still_path(url);
+    if file_nonempty(&dest) {
+        return;
+    }
+    let gen = remote_thumb_gen().load(Ordering::Relaxed);
+    let _ = remote_still_tx().send(RemoteStillJob {
+        url: url.to_string(),
+        dest,
+        child: None,
+        priority: false,
+        gen,
+    });
+}
+
+pub(crate) fn prefetch_discover_thumbs(items: &[catalog::RemoteItem]) {
+    for it in items {
+        if let Some(th) = it.thumb.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            prefetch_remote_image_thumb(th);
+        } else if it.video {
+            prefetch_remote_video_still(&it.url);
+        } else if !it.url.trim().is_empty() {
+            prefetch_remote_image_thumb(&it.url);
+        }
+    }
+}
+
 struct RemoteStillJob {
     url: String,
     dest: PathBuf,
-    child: SendWeakRef<FlowBoxChild>,
+    child: Option<SendWeakRef<FlowBoxChild>>,
     priority: bool,
     gen: u64,
 }
@@ -451,7 +498,7 @@ fn remote_still_tx() -> std::sync::mpsc::Sender<RemoteStillJob> {
                         if gen != remote_thumb_gen().load(Ordering::Relaxed) {
                             return;
                         }
-                        if let Some(c) = child.upgrade() {
+                        if let Some(c) = child.and_then(|c| c.upgrade()) {
                             refresh_remote_tile_still(&c, &dest);
                         }
                     });
@@ -489,4 +536,3 @@ pub(crate) fn ffmpeg_http_still(url: &str, dest: &Path, ss_before_input: bool) -
     };
     wait_child_timeout(&mut child, REMOTE_STILL_TIMEOUT) && file_nonempty(dest)
 }
-

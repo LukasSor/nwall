@@ -1,4 +1,3 @@
-
 use std::cell::Cell;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -25,7 +24,13 @@ use serde_json::Value;
 use crate::ipc_util::ipc_ok;
 use crate::ui::preview::refresh_bg_music_ui;
 
-const STARTER_CHIPS: &[(&str, &str)] = &[
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MusicPicker {
+    Archive,
+    Youtube,
+}
+
+const ARCHIVE_CHIPS: &[(&str, &str)] = &[
     ("Ambient", "ambient"),
     ("Chill", "chill"),
     ("Piano", "piano"),
@@ -34,12 +39,52 @@ const STARTER_CHIPS: &[(&str, &str)] = &[
     ("Drone", "drone"),
 ];
 
+const YT_CHIPS: &[(&str, &str)] = &[
+    ("Ambient", "ambient music"),
+    ("Chill", "chill music"),
+    ("Piano", "piano instrumental"),
+    ("Nature", "nature sounds"),
+    ("Lo-fi", "lofi hip hop"),
+    ("Drone", "drone ambient"),
+];
+
+impl MusicPicker {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Archive => "Archive music",
+            Self::Youtube => "YouTube Music",
+        }
+    }
+
+    fn placeholder(self) -> &'static str {
+        match self {
+            Self::Archive => "Search Archive.org audio…",
+            Self::Youtube => "Search YouTube Music or paste a URL…",
+        }
+    }
+
+    fn source_name(self) -> &'static str {
+        match self {
+            Self::Archive => "Internet Archive",
+            Self::Youtube => "YouTube Music",
+        }
+    }
+
+    fn chips(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            Self::Archive => ARCHIVE_CHIPS,
+            Self::Youtube => YT_CHIPS,
+        }
+    }
+}
+
 pub(crate) fn open_archive_music_dialog(
     parent: &impl IsA<gtk::Window>,
     wallpaper: PathBuf,
     status_bar: &Label,
     file_btn: &Button,
     archive_btn: &Button,
+    yt_btn: &Button,
     remove_btn: &Button,
     mute: &Switch,
     vol: &SpinButton,
@@ -47,8 +92,71 @@ pub(crate) fn open_archive_music_dialog(
     vol_row: &GtkBox,
     name_lbl: &Label,
 ) {
+    open_music_search_dialog(
+        parent,
+        wallpaper,
+        status_bar,
+        file_btn,
+        archive_btn,
+        yt_btn,
+        remove_btn,
+        mute,
+        vol,
+        mute_row,
+        vol_row,
+        name_lbl,
+        MusicPicker::Archive,
+    );
+}
+
+pub(crate) fn open_yt_music_dialog(
+    parent: &impl IsA<gtk::Window>,
+    wallpaper: PathBuf,
+    status_bar: &Label,
+    file_btn: &Button,
+    archive_btn: &Button,
+    yt_btn: &Button,
+    remove_btn: &Button,
+    mute: &Switch,
+    vol: &SpinButton,
+    mute_row: &GtkBox,
+    vol_row: &GtkBox,
+    name_lbl: &Label,
+) {
+    open_music_search_dialog(
+        parent,
+        wallpaper,
+        status_bar,
+        file_btn,
+        archive_btn,
+        yt_btn,
+        remove_btn,
+        mute,
+        vol,
+        mute_row,
+        vol_row,
+        name_lbl,
+        MusicPicker::Youtube,
+    );
+}
+
+fn open_music_search_dialog(
+    parent: &impl IsA<gtk::Window>,
+    wallpaper: PathBuf,
+    status_bar: &Label,
+    file_btn: &Button,
+    archive_btn: &Button,
+    yt_btn: &Button,
+    remove_btn: &Button,
+    mute: &Switch,
+    vol: &SpinButton,
+    mute_row: &GtkBox,
+    vol_row: &GtkBox,
+    name_lbl: &Label,
+    picker: MusicPicker,
+) {
     let dialog = Window::builder()
-        .title("Archive music")
+        .title(picker.title())
         .transient_for(parent)
         .modal(true)
         .default_width(560)
@@ -64,7 +172,7 @@ pub(crate) fn open_archive_music_dialog(
     let search_row = GtkBox::new(Orientation::Horizontal, 6);
     let search = Entry::new();
     search.set_hexpand(true);
-    search.set_placeholder_text(Some("Search Archive.org audio…"));
+    search.set_placeholder_text(Some(picker.placeholder()));
     let search_btn = Button::with_label("Search");
     search_btn.add_css_class("suggested-action");
     search_row.append(&search);
@@ -72,7 +180,7 @@ pub(crate) fn open_archive_music_dialog(
 
     let chips = GtkBox::new(Orientation::Horizontal, 6);
     chips.set_halign(Align::Start);
-    for (label, _) in STARTER_CHIPS {
+    for (label, _) in picker.chips() {
         let chip = Button::with_label(label);
         chip.add_css_class("flat");
         chip.set_tooltip_text(Some(&format!("Browse {label} tracks")));
@@ -361,20 +469,21 @@ pub(crate) fn open_archive_music_dialog(
             let preview_loading_ui_c = Arc::clone(&preview_loading_ui);
             let preview_load_gen_c = Arc::clone(&preview_load_gen);
             std::thread::spawn(move || {
-                let result = catalog::fetch_archive_music(&query, 1);
+                let result = fetch_picker_music(picker, &query);
                 glib::idle_add_once(move || {
                     if gen.load(Ordering::Relaxed) != my {
                         return;
                     }
                     busy_c.store(false, Ordering::Relaxed);
+                    let can_search = picker_search_ok(picker);
                     if let Some(b) = search_btn_w.upgrade() {
-                        b.set_sensitive(true);
+                        b.set_sensitive(can_search);
                     }
                     if let Some(e) = search_w.upgrade() {
-                        e.set_sensitive(true);
+                        e.set_sensitive(can_search);
                     }
                     if let Some(c) = chips_w.upgrade() {
-                        set_chips_sensitive(&c, true);
+                        set_chips_sensitive(&c, can_search);
                     }
                     let Some(list) = list_w.upgrade() else {
                         return;
@@ -383,7 +492,7 @@ pub(crate) fn open_archive_music_dialog(
                         return;
                     };
                     match result {
-                        Ok(found) if found.is_empty() => {
+                        Ok(found) if found.is_empty() && picker == MusicPicker::Archive => {
                             let starters = catalog::archive_music_starters();
                             fill_track_list(
                                 &list,
@@ -394,10 +503,28 @@ pub(crate) fn open_archive_music_dialog(
                                 &busy_c,
                                 &preview_load_gen_c,
                                 &preview_loading_ui_c,
+                                picker,
                             );
                             status.set_text("No search hits — showing starters");
                             if let Some(u) = use_w.upgrade() {
                                 u.set_sensitive(list.selected_row().is_some());
+                            }
+                        }
+                        Ok(found) if found.is_empty() => {
+                            fill_track_list(
+                                &list,
+                                &tracks_c,
+                                &found,
+                                &player_c,
+                                &status,
+                                &busy_c,
+                                &preview_load_gen_c,
+                                &preview_loading_ui_c,
+                                picker,
+                            );
+                            status.set_text("No tracks found");
+                            if let Some(u) = use_w.upgrade() {
+                                u.set_sensitive(false);
                             }
                         }
                         Ok(found) => {
@@ -411,13 +538,14 @@ pub(crate) fn open_archive_music_dialog(
                                 &busy_c,
                                 &preview_load_gen_c,
                                 &preview_loading_ui_c,
+                                picker,
                             );
                             status.set_text(&format!("{n} tracks"));
                             if let Some(u) = use_w.upgrade() {
                                 u.set_sensitive(list.selected_row().is_some());
                             }
                         }
-                        Err(e) => {
+                        Err(e) if picker == MusicPicker::Archive => {
                             let starters = catalog::archive_music_starters();
                             fill_track_list(
                                 &list,
@@ -428,6 +556,7 @@ pub(crate) fn open_archive_music_dialog(
                                 &busy_c,
                                 &preview_load_gen_c,
                                 &preview_loading_ui_c,
+                                picker,
                             );
                             status.set_text(&format!(
                                 "Archive.org timed out — starters ready ({})",
@@ -435,6 +564,23 @@ pub(crate) fn open_archive_music_dialog(
                             ));
                             if let Some(u) = use_w.upgrade() {
                                 u.set_sensitive(list.selected_row().is_some());
+                            }
+                        }
+                        Err(e) => {
+                            fill_track_list(
+                                &list,
+                                &tracks_c,
+                                &[],
+                                &player_c,
+                                &status,
+                                &busy_c,
+                                &preview_load_gen_c,
+                                &preview_loading_ui_c,
+                                picker,
+                            );
+                            status.set_text(&short_err(&e));
+                            if let Some(u) = use_w.upgrade() {
+                                u.set_sensitive(false);
                             }
                         }
                     }
@@ -449,7 +595,7 @@ pub(crate) fn open_archive_music_dialog(
         while let Some(w) = child {
             let next = w.next_sibling();
             if let Ok(btn) = w.downcast::<Button>() {
-                if let Some((label, q)) = STARTER_CHIPS.get(i) {
+                if let Some((label, q)) = picker.chips().get(i) {
                     let run_search = Rc::clone(&run_search);
                     let search = search.clone();
                     let query = (*q).to_string();
@@ -501,6 +647,7 @@ pub(crate) fn open_archive_music_dialog(
     let status_bar = status_bar.clone();
     let file_btn = file_btn.clone();
     let archive_btn = archive_btn.clone();
+    let yt_btn = yt_btn.clone();
     let remove_btn = remove_btn.clone();
     let mute = mute.clone();
     let vol = vol.clone();
@@ -565,6 +712,7 @@ pub(crate) fn open_archive_music_dialog(
         let status_bar_w = SendWeakRef::from(status_bar.downgrade());
         let file_btn_w = SendWeakRef::from(file_btn.downgrade());
         let archive_btn_w = SendWeakRef::from(archive_btn.downgrade());
+        let yt_btn_w = SendWeakRef::from(yt_btn.downgrade());
         let remove_btn_w = SendWeakRef::from(remove_btn.downgrade());
         let mute_w = SendWeakRef::from(mute.downgrade());
         let vol_w = SendWeakRef::from(vol.downgrade());
@@ -580,24 +728,45 @@ pub(crate) fn open_archive_music_dialog(
         let title = track.title.clone();
 
         std::thread::spawn(move || {
-            let result = match catalog::download_archive_music(&track) {
+            let source_name = picker.source_name();
+            let result = match download_picker_music(picker, &track) {
                 Ok(path) => {
                     let mut meta = catalog::load_path_meta(&path).unwrap_or_default();
-                    if meta.title.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+                    if meta
+                        .title
+                        .as_ref()
+                        .map(|s| s.trim().is_empty())
+                        .unwrap_or(true)
+                    {
                         meta.title = Some(track.title.clone());
                     }
-                    if meta.credit.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+                    if meta
+                        .credit
+                        .as_ref()
+                        .map(|s| s.trim().is_empty())
+                        .unwrap_or(true)
+                    {
                         meta.credit = track
                             .creator
                             .clone()
                             .filter(|s| !s.trim().is_empty())
-                            .or_else(|| Some("Internet Archive".into()));
+                            .or_else(|| Some(source_name.into()));
                     }
-                    if meta.page_url.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true) {
+                    if meta
+                        .page_url
+                        .as_ref()
+                        .map(|s| s.trim().is_empty())
+                        .unwrap_or(true)
+                    {
                         meta.page_url = Some(track.page_url.clone());
                     }
-                    if meta.source.as_ref().map(|s| s.trim().is_empty()).unwrap_or(true) {
-                        meta.source = Some("Internet Archive".into());
+                    if meta
+                        .source
+                        .as_ref()
+                        .map(|s| s.trim().is_empty())
+                        .unwrap_or(true)
+                    {
+                        meta.source = Some(source_name.into());
                     }
                     catalog::persist_path_meta(&path, &meta);
                     Ok(path)
@@ -608,14 +777,15 @@ pub(crate) fn open_archive_music_dialog(
             glib::idle_add_once(move || {
                 let reenable = |selected: bool| {
                     busy_c.store(false, Ordering::Relaxed);
+                    let can_search = picker_search_ok(picker);
                     if let Some(b) = search_btn_w.upgrade() {
-                        b.set_sensitive(true);
+                        b.set_sensitive(can_search);
                     }
                     if let Some(e) = search_w.upgrade() {
-                        e.set_sensitive(true);
+                        e.set_sensitive(can_search);
                     }
                     if let Some(c) = chips_w.upgrade() {
-                        set_chips_sensitive(&c, true);
+                        set_chips_sensitive(&c, can_search);
                     }
                     if let Some(u) = use_btn_w.upgrade() {
                         u.set_sensitive(selected);
@@ -642,6 +812,7 @@ pub(crate) fn open_archive_music_dialog(
                                 if let (
                                     Some(file_btn),
                                     Some(archive_btn),
+                                    Some(yt_btn),
                                     Some(remove_btn),
                                     Some(mute),
                                     Some(vol),
@@ -651,6 +822,7 @@ pub(crate) fn open_archive_music_dialog(
                                 ) = (
                                     file_btn_w.upgrade(),
                                     archive_btn_w.upgrade(),
+                                    yt_btn_w.upgrade(),
                                     remove_btn_w.upgrade(),
                                     mute_w.upgrade(),
                                     vol_w.upgrade(),
@@ -662,6 +834,7 @@ pub(crate) fn open_archive_music_dialog(
                                         Some(&wall),
                                         &file_btn,
                                         &archive_btn,
+                                        &yt_btn,
                                         &remove_btn,
                                         &mute,
                                         &vol,
@@ -714,18 +887,38 @@ pub(crate) fn open_archive_music_dialog(
 
     dialog.present();
 
-    let starters = catalog::archive_music_starters();
-    fill_track_list(
-        &list,
-        &tracks,
-        &starters,
-        &player,
-        &dialog_status,
-        &busy,
-        &preview_load_gen,
-        &preview_loading_ui,
-    );
-    dialog_status.set_text(&format!("{} tracks", starters.len()));
+    let can_search = picker_search_ok(picker);
+    search.set_sensitive(can_search);
+    search_btn.set_sensitive(can_search);
+    set_chips_sensitive(&chips, can_search);
+    if picker == MusicPicker::Youtube {
+        fill_track_list(
+            &list,
+            &tracks,
+            &[],
+            &player,
+            &dialog_status,
+            &busy,
+            &preview_load_gen,
+            &preview_loading_ui,
+            picker,
+        );
+        dialog_status.set_text("Search YouTube Music or pick a mood");
+    } else {
+        let starters = catalog::archive_music_starters();
+        fill_track_list(
+            &list,
+            &tracks,
+            &starters,
+            &player,
+            &dialog_status,
+            &busy,
+            &preview_load_gen,
+            &preview_loading_ui,
+            picker,
+        );
+        dialog_status.set_text(&format!("{} tracks", starters.len()));
+    }
     search.set_text("");
 }
 
@@ -786,7 +979,16 @@ fn clear_loading_row(slot: &Arc<Mutex<Option<LoadingRowUi>>>) {
 
 fn short_err(e: &anyhow::Error) -> String {
     let s = e.root_cause().to_string();
-    if s.contains("timed out") || s.contains("timeout") {
+    if s.contains("YouTube blocked this stream")
+        || s.contains("Sign in to confirm")
+        || s.contains("not a bot")
+        || s.contains("LOGIN_REQUIRED")
+        || s.contains("ERROR: [youtube]")
+    {
+        "YouTube blocked this stream".into()
+    } else if s.contains("install yt-dlp") || s.contains("yt-dlp not found") {
+        "paste a video URL or search by name".into()
+    } else if s.contains("timed out") || s.contains("timeout") {
         "timed out — try again".into()
     } else if s.contains("cancelled") {
         "cancelled".into()
@@ -821,6 +1023,43 @@ fn format_clock(secs: f64) -> String {
     }
 }
 
+fn picker_search_ok(_picker: MusicPicker) -> bool {
+    true
+}
+
+fn fetch_picker_music(picker: MusicPicker, query: &str) -> anyhow::Result<Vec<MusicTrack>> {
+    match picker {
+        MusicPicker::Archive => catalog::fetch_archive_music(query, 1),
+        MusicPicker::Youtube => catalog::fetch_yt_music(query),
+    }
+}
+
+fn download_picker_music(picker: MusicPicker, track: &MusicTrack) -> anyhow::Result<PathBuf> {
+    match picker {
+        MusicPicker::Archive => catalog::download_archive_music(track),
+        MusicPicker::Youtube => catalog::download_yt_music(track),
+    }
+}
+
+fn preview_picker_music(picker: MusicPicker, track: &MusicTrack) -> anyhow::Result<String> {
+    match picker {
+        MusicPicker::Archive => {
+            download_picker_music(picker, track).map(|p| p.to_string_lossy().into_owned())
+        }
+        MusicPicker::Youtube => {
+            let media = catalog::resolve_yt_music_audio(track)?;
+            if !(media.starts_with("http://") || media.starts_with("https://")) {
+                return Ok(media);
+            }
+            let track = track.clone();
+            std::thread::spawn(move || {
+                catalog::prefetch_yt_music(&track);
+            });
+            Ok(media)
+        }
+    }
+}
+
 fn fill_track_list(
     list: &ListBox,
     tracks: &Arc<Mutex<Vec<MusicTrack>>>,
@@ -830,6 +1069,7 @@ fn fill_track_list(
     busy: &Arc<AtomicBool>,
     preview_load_gen: &Arc<AtomicU64>,
     preview_loading_ui: &Arc<Mutex<Option<LoadingRowUi>>>,
+    picker: MusicPicker,
 ) {
     clear_loading_row(preview_loading_ui);
     while let Some(child) = list.first_child() {
@@ -848,6 +1088,7 @@ fn fill_track_list(
             busy,
             preview_load_gen,
             preview_loading_ui,
+            picker,
         ));
     }
 }
@@ -872,6 +1113,7 @@ fn make_track_row(
     busy: &Arc<AtomicBool>,
     preview_load_gen: &Arc<AtomicU64>,
     preview_loading_ui: &Arc<Mutex<Option<LoadingRowUi>>>,
+    picker: MusicPicker,
 ) -> ListBoxRow {
     let row = ListBoxRow::new();
     row.add_css_class("music-track-row");
@@ -883,7 +1125,11 @@ fn make_track_row(
     outer.set_margin_bottom(4);
 
     let (cover_host, cover, cover_ph) = make_music_cover();
-    bind_music_cover(&cover, &cover_ph, &track.id);
+    let cover_url = track
+        .thumb_url
+        .clone()
+        .unwrap_or_else(|| format!("https://archive.org/services/img/{}", track.id.trim()));
+    bind_music_cover(&cover, &cover_ph, &cover_url);
 
     let text = GtkBox::new(Orientation::Vertical, 1);
     text.set_hexpand(true);
@@ -903,10 +1149,42 @@ fn make_track_row(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or("Internet Archive");
-    let avatar = adw::Avatar::new(16, Some(creator_name), true);
+        .unwrap_or(picker.source_name());
+    let avatar = adw::Avatar::new(MUSIC_AVATAR_PX, Some(creator_name), true);
     avatar.set_valign(Align::Center);
     avatar.set_tooltip_text(Some(creator_name));
+    avatar.add_css_class("uploader-avatar");
+    bind_music_avatar(&avatar, track.avatar.as_deref());
+    if picker == MusicPicker::Youtube
+        && track
+            .avatar
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .is_none()
+    {
+        let track_c = track.clone();
+        let id = track.id.clone();
+        let av_w = SendWeakRef::from(avatar.downgrade());
+        let tracks_c = Arc::clone(tracks);
+        std::thread::spawn(move || {
+            let Some(url) = catalog::fetch_yt_music_avatar(&track_c) else {
+                return;
+            };
+            glib::idle_add_once(move || {
+                if let Ok(mut guard) = tracks_c.lock() {
+                    if let Some(t) = guard.get_mut(idx) {
+                        if t.id == id {
+                            t.avatar = Some(url.clone());
+                        }
+                    }
+                }
+                if let Some(av) = av_w.upgrade() {
+                    bind_music_avatar(&av, Some(&url));
+                }
+            });
+        });
+    }
     let creator_lbl = Label::new(Some(creator_name));
     creator_lbl.set_halign(Align::Start);
     creator_lbl.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -933,7 +1211,7 @@ fn make_track_row(
         } else {
             dur_lbl.set_visible(false);
         }
-    } else {
+    } else if picker == MusicPicker::Archive {
         dur_lbl.set_visible(false);
         let id = track.id.clone();
         let dur_w = SendWeakRef::from(dur_lbl.downgrade());
@@ -960,6 +1238,8 @@ fn make_track_row(
                 }
             });
         });
+    } else {
+        dur_lbl.set_visible(false);
     }
 
     let play = Button::from_icon_name("media-playback-start-symbolic");
@@ -1046,7 +1326,7 @@ fn make_track_row(
                 t
             };
             let title = track.title.clone();
-            status.set_text(&format!("Downloading {title}…"));
+            status.set_text(&format!("Loading {title}…"));
 
             show_row_spinner(&stack, &spinner);
             if let Ok(mut slot) = preview_loading_ui.lock() {
@@ -1071,7 +1351,7 @@ fn make_track_row(
                 let result = if gen.load(Ordering::Relaxed) != my {
                     Err(anyhow::anyhow!("cancelled"))
                 } else {
-                    catalog::download_archive_music(&track).and_then(|path| {
+                    preview_picker_music(picker, &track).and_then(|media| {
                         if gen.load(Ordering::Relaxed) != my {
                             return Err(anyhow::anyhow!("cancelled"));
                         }
@@ -1081,7 +1361,7 @@ fn make_track_row(
                         if gen.load(Ordering::Relaxed) != my {
                             return Err(anyhow::anyhow!("cancelled"));
                         }
-                        p.load_media(idx, &title, &path.to_string_lossy(), play_w.clone())?;
+                        p.load_media(idx, &title, &media, play_w.clone())?;
                         let dur = p.duration().ok().filter(|d| *d > 0.0);
                         Ok((title, dur))
                     })
@@ -1146,6 +1426,8 @@ fn make_track_row(
 }
 
 const MUSIC_COVER_PX: i32 = 36;
+const MUSIC_AVATAR_PX: i32 = 16;
+const YT_PREVIEW_UA: &str = "com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip";
 
 fn make_music_cover() -> (Overlay, Picture, Image) {
     let pic = Picture::new();
@@ -1186,12 +1468,62 @@ fn make_music_cover() -> (Overlay, Picture, Image) {
     (host, pic, placeholder)
 }
 
-fn bind_music_cover(pic: &Picture, placeholder: &Image, identifier: &str) {
-    let id = identifier.trim();
-    if id.is_empty() {
+fn bind_music_avatar(avatar: &adw::Avatar, url: Option<&str>) {
+    let Some(url) = url.map(str::trim).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    let dest = catalog::cached_path(url, "thumb");
+    if dest.is_file() && dest.metadata().map(|m| m.len() > 24).unwrap_or(false) {
+        set_music_avatar_from_path(avatar, &dest);
         return;
     }
-    let url = format!("https://archive.org/services/img/{id}");
+    let url = url.to_string();
+    let weak = SendWeakRef::from(avatar.downgrade());
+    std::thread::spawn(move || {
+        let Ok(path) = catalog::download_thumb(&url) else {
+            return;
+        };
+        if path.metadata().map(|m| m.len() < 24).unwrap_or(true) {
+            return;
+        }
+        if let Ok(bytes) = std::fs::read(&path) {
+            if bytes.starts_with(b"<") || bytes.starts_with(b"<!") {
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        }
+        glib::idle_add_once(move || {
+            if let Some(av) = weak.upgrade() {
+                set_music_avatar_from_path(&av, &path);
+            }
+        });
+    });
+}
+
+fn set_music_avatar_from_path(avatar: &adw::Avatar, path: &Path) {
+    let Ok(bytes) = std::fs::read(path) else {
+        return;
+    };
+    if bytes.len() < 24 || bytes.starts_with(b"<") || bytes.starts_with(b"<!") {
+        return;
+    }
+    let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from(&bytes));
+    let Ok(pb) = gdk_pixbuf::Pixbuf::from_stream(&stream, gio::Cancellable::NONE) else {
+        return;
+    };
+    let side = MUSIC_AVATAR_PX * 2;
+    let pb = pb
+        .scale_simple(side, side, gdk_pixbuf::InterpType::Bilinear)
+        .unwrap_or(pb);
+    avatar.set_custom_image(Some(&gdk::Texture::for_pixbuf(&pb)));
+    avatar.set_visible(true);
+}
+
+fn bind_music_cover(pic: &Picture, placeholder: &Image, url: &str) {
+    let url = url.trim().to_string();
+    if url.is_empty() {
+        return;
+    }
     let dest = catalog::cached_path(&url, "thumb");
     if dest.is_file() && dest.metadata().map(|m| m.len() > 64).unwrap_or(false) {
         if set_music_cover_from_path(pic, &dest) {
@@ -1341,6 +1673,7 @@ impl PreviewPlayer {
             cmd.process_group(0);
         }
         let vol = self.volume.clamp(0.0, 100.0);
+        let http = media.starts_with("http://") || media.starts_with("https://");
         cmd.args([
             "--no-video",
             "--force-window=no",
@@ -1351,11 +1684,18 @@ impl PreviewPlayer {
             "--volume-max=100",
             &format!("--volume={vol}"),
             &format!("--input-ipc-server={}", sock.display()),
-        ])
-        .arg(media)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        ]);
+        if http {
+            cmd.args([
+                &format!("--user-agent={YT_PREVIEW_UA}"),
+                "--referrer=https://www.youtube.com/",
+                "--network-timeout=30",
+            ]);
+        }
+        cmd.arg(media)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
         let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("mpv: {e}"))?;
 
         let mut ready = false;
@@ -1389,7 +1729,8 @@ impl PreviewPlayer {
         let _ = mpv_cmd(&sock, &serde_json::json!(["set_property", "mute", false]));
 
         let mut started = false;
-        for _ in 0..80 {
+        let wait_n = if http { 150 } else { 80 };
+        for _ in 0..wait_n {
             if gen != self.gen {
                 let _ = mpv_cmd(&sock, &serde_json::json!(["quit"]));
                 kill_preview_child(child.id(), &mut child);
@@ -1494,8 +1835,7 @@ impl Drop for PreviewPlayer {
 }
 
 fn mpv_cmd(sock: &Path, command: &Value) -> anyhow::Result<Value> {
-    let mut stream = UnixStream::connect(sock)
-        .map_err(|e| anyhow::anyhow!("mpv connect: {e}"))?;
+    let mut stream = UnixStream::connect(sock).map_err(|e| anyhow::anyhow!("mpv connect: {e}"))?;
     stream
         .set_read_timeout(Some(Duration::from_millis(800)))
         .ok();
@@ -1529,8 +1869,7 @@ fn mpv_cmd(sock: &Path, command: &Value) -> anyhow::Result<Value> {
     if line.is_empty() {
         return Ok(Value::Null);
     }
-    let v: Value = serde_json::from_str(line)
-        .map_err(|e| anyhow::anyhow!("mpv json: {e}"))?;
+    let v: Value = serde_json::from_str(line).map_err(|e| anyhow::anyhow!("mpv json: {e}"))?;
     if v.get("error").and_then(|e| e.as_str()) != Some("success")
         && v.get("error").is_some()
         && v.get("error") != Some(&Value::Null)

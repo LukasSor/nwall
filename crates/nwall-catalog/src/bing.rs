@@ -4,20 +4,16 @@ use serde::Deserialize;
 use super::*;
 
 pub(crate) fn fetch_bing() -> Result<Vec<RemoteItem>> {
-    // Two idx windows in parallel → up to 16 days at ~1× network RTT (API caps n=8).
-    let http = listing_agent();
-    let (a, b) = std::thread::scope(|scope| {
-        let http_a = http.clone();
-        let http_b = http.clone();
-        let ha = scope.spawn(move || bing_page(&http_a, 0));
-        let hb = scope.spawn(move || bing_page(&http_b, 8));
-        (ha.join().unwrap(), hb.join().unwrap())
-    });
-    let mut images = a.context("bing page 0")?;
-    match b {
-        Ok(more) => images.extend(more),
-        Err(e) => log::warn!("bing page idx=8: {e:#}"),
-    }
+    let a = bing_page(0).context("bing page 0")?;
+    let b = match bing_page(8) {
+        Ok(more) => more,
+        Err(e) => {
+            log::warn!("bing page idx=8: {e:#}");
+            Vec::new()
+        }
+    };
+    let mut images = a;
+    images.extend(b);
     let mut seen = std::collections::HashSet::new();
     Ok(images
         .into_iter()
@@ -26,14 +22,10 @@ pub(crate) fn fetch_bing() -> Result<Vec<RemoteItem>> {
         .collect())
 }
 
-fn bing_page(http: &ureq::Agent, idx: u32) -> Result<Vec<BingImage>> {
-    let url = format!(
-        "https://www.bing.com/HPImageArchive.aspx?format=js&idx={idx}&n=8&mkt=en-US"
-    );
-    let parsed: BingArchivePage = http
-        .get(&url)
-        .call()
-        .with_context(|| format!("bing HPImageArchive idx={idx}"))?
+fn bing_page(idx: u32) -> Result<Vec<BingImage>> {
+    let url = format!("https://www.bing.com/HPImageArchive.aspx?format=js&idx={idx}&n=8&mkt=en-US");
+    let parsed: BingArchivePage = limited_get(&url, "bing", RequestClass::Listing, false)
+        .with_context(|| format!("bing page {idx}"))?
         .into_json()
         .context("bing json")?;
     Ok(parsed.images)

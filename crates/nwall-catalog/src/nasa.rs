@@ -6,7 +6,6 @@ use serde::Deserialize;
 use super::*;
 
 pub(crate) const NASA_DAYS: u32 = 10;
-pub(crate) const NASA_FETCH_CONCURRENCY: usize = 3;
 
 pub(crate) fn fetch_nasa(api_key: &str) -> Result<Vec<RemoteItem>> {
     let key = if api_key.trim().is_empty() {
@@ -14,9 +13,9 @@ pub(crate) fn fetch_nasa(api_key: &str) -> Result<Vec<RemoteItem>> {
     } else {
         api_key.trim().to_string()
     };
-    let http = listing_agent();
-
-    nasa_by_recent_dates(&http, &key, NASA_DAYS)
+    let has_key = !key.is_empty() && !key.eq_ignore_ascii_case("DEMO_KEY");
+    note_source_auth("nasa", has_key);
+    nasa_by_recent_dates(&key, has_key, NASA_DAYS)
 }
 
 pub(crate) fn nasa_item(a: NasaApod) -> Option<RemoteItem> {
@@ -77,12 +76,8 @@ pub(crate) fn nasa_item(a: NasaApod) -> Option<RemoteItem> {
     }
 
     if media == "video" {
-        let file_type = nasa_file_type_from_url(&url).filter(|t| {
-            matches!(
-                t.as_str(),
-                "MP4" | "WebM" | "MOV" | "MKV" | "AVI" | "M4V"
-            )
-        })?;
+        let file_type = nasa_file_type_from_url(&url)
+            .filter(|t| matches!(t.as_str(), "MP4" | "WebM" | "MOV" | "MKV" | "AVI" | "M4V"))?;
         let thumb = a
             .thumbnail_url
             .as_deref()
@@ -161,12 +156,10 @@ pub(crate) fn nasa_youtube_watch_url(url: &str) -> Option<String> {
         let start = idx + "youtu.be/".len();
         u.get(start..)?.split(['?', '&', '/']).next()
     } else if lower.contains("youtube.com/watch") {
-        u.split(['?', '&'])
-            .skip(1)
-            .find_map(|p| {
-                let (k, v) = p.split_once('=')?;
-                k.eq_ignore_ascii_case("v").then_some(v)
-            })
+        u.split(['?', '&']).skip(1).find_map(|p| {
+            let (k, v) = p.split_once('=')?;
+            k.eq_ignore_ascii_case("v").then_some(v)
+        })
     } else {
         None
     }?;
@@ -203,74 +196,65 @@ pub(crate) fn nasa_file_type_from_url(url: &str) -> Option<String> {
     }
 }
 
-pub(crate) fn nasa_by_recent_dates(http: &ureq::Agent, key: &str, days: u32) -> Result<Vec<RemoteItem>> {
-    let dates: Vec<String> = (0..days).map(utc_ymd_days_ago).collect();
-    let mut items = Vec::new();
-    let mut errors = Vec::new();
-    let mut rate_limited = false;
-    for chunk in dates.chunks(NASA_FETCH_CONCURRENCY) {
-        if rate_limited {
-            break;
+pub(crate) fn nasa_by_recent_dates(key: &str, has_key: bool, days: u32) -> Result<Vec<RemoteItem>> {
+    let days = days.max(1);
+    let start = utc_ymd_days_ago(days.saturating_sub(1));
+    let end = utc_ymd_days_ago(0);
+    let url = format!(
+        "https://api.nasa.gov/planetary/apod?api_key={}&start_date={}&end_date={}&thumbs=true",
+        urlencoding_lite(key),
+        start,
+        end
+    );
+    match nasa_parse_listing(&url, has_key) {
+        Ok(items) if !items.is_empty() => return Ok(items),
+        Ok(_) => {}
+        Err(e) if http_err_is_rate_limit(&e) => {
+            return Err(e);
         }
-        let key = key.to_string();
-        let batch: Vec<(String, Result<Option<RemoteItem>>)> = std::thread::scope(|scope| {
-            let mut handles = Vec::with_capacity(chunk.len());
-            for date in chunk {
-                let http = http.clone();
-                let key = key.clone();
-                let date = date.clone();
-                handles.push(scope.spawn(move || {
-                    let res = nasa_one_date(&http, &key, &date);
-                    (date, res)
-                }));
-            }
-            handles
-                .into_iter()
-                .map(|h| h.join().unwrap())
-                .collect()
-        });
-        for (date, res) in batch {
-            match res {
-                Ok(Some(it)) => items.push(it),
-                Ok(None) => {}
-                Err(e) => {
-                    let msg = format!("{e:#}");
-                    if msg.contains("429") || msg.to_ascii_lowercase().contains("rate limit") {
-                        rate_limited = true;
-                    }
-                    log::warn!("NASA APOD {date}: {msg}");
-                    errors.push(format!("{date}: {msg}"));
-                }
-            }
-        }
-        if items.len() >= 6 {
-            break;
-        }
+        Err(e) => log::warn!("NASA APOD range failed: {e:#}"),
     }
-    if items.is_empty() {
-        if rate_limited {
-            return Err(anyhow!(
-                "Rate limit reached — add a free API key next to NASA APOD in Settings, or try again later."
-            ));
-        }
-        if errors.is_empty() {
-            return Err(anyhow!("No results found"));
-        }
-        return Err(anyhow!("NASA APOD: {}", errors.join("; ")));
+    match nasa_one_date(key, has_key, &end) {
+        Ok(Some(it)) => Ok(vec![it]),
+        Ok(None) => Err(anyhow!("No results found")),
+        Err(e) => Err(e),
     }
-    Ok(items)
 }
 
-pub(crate) fn nasa_one_date(http: &ureq::Agent, key: &str, date: &str) -> Result<Option<RemoteItem>> {
+fn nasa_parse_listing(url: &str, has_key: bool) -> Result<Vec<RemoteItem>> {
+    let raw: serde_json::Value = limited_get(url, "nasa", RequestClass::Listing, has_key)?
+        .into_json()
+        .context("NASA json")?;
+    let mut items = Vec::new();
+    if let Some(arr) = raw.as_array() {
+        for v in arr {
+            let a: NasaApod = serde_json::from_value(v.clone()).unwrap_or_default();
+            if let Some(it) = nasa_item(a) {
+                items.push(it);
+            }
+        }
+    } else {
+        let a: NasaApod = serde_json::from_value(raw).unwrap_or_default();
+        if let Some(it) = nasa_item(a) {
+            items.push(it);
+        }
+    }
+    items.reverse();
+    if items.is_empty() {
+        Err(anyhow!("No results found"))
+    } else {
+        Ok(items)
+    }
+}
+
+pub(crate) fn nasa_one_date(key: &str, has_key: bool, date: &str) -> Result<Option<RemoteItem>> {
     let url = format!(
-        "https://api.nasa.gov/planetary/apod?api_key={}&date={}",
+        "https://api.nasa.gov/planetary/apod?api_key={}&date={}&thumbs=true",
         urlencoding_lite(key),
         date
     );
-    let parsed: NasaApod = http
-        .get(&url)
-        .call()
-        .with_context(|| format!("NASA APOD {date}"))?
+    let parsed: NasaApod = limited_get(&url, "nasa", RequestClass::Listing, has_key)
+        .with_context(|| "NASA APOD")?
         .into_json()
         .context("NASA json")?;
     Ok(nasa_item(parsed))
@@ -301,4 +285,3 @@ pub(crate) fn civil_from_days(z: i64) -> (i32, u32, u32) {
     let y = if m <= 2 { y + 1 } else { y };
     (y as i32, m as u32, d as u32)
 }
-

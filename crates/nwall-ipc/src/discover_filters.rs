@@ -112,10 +112,7 @@ pub struct ArchiveFiltersState {
 
 impl Default for ArchiveFiltersState {
     fn default() -> Self {
-        Self {
-            order: 0,
-            media: 0,
-        }
+        Self { order: 0, media: 0 }
     }
 }
 

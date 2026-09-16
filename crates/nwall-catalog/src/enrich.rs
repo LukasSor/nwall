@@ -41,7 +41,7 @@ pub struct WallhavenDetails {
 
 pub(crate) const WALLHAVEN_DETAIL_TTL: Duration = Duration::from_secs(30 * 24 * 3600);
 /// Cap concurrent Wallhaven `/w/{id}` requests.
-pub const WALLHAVEN_DETAIL_HTTP_MAX: usize = 8;
+pub const WALLHAVEN_DETAIL_HTTP_MAX: usize = 2;
 
 pub(crate) fn wallhaven_warm_gen() -> &'static std::sync::atomic::AtomicU64 {
     static GEN: OnceLock<std::sync::atomic::AtomicU64> = OnceLock::new();
@@ -55,9 +55,8 @@ pub(crate) fn wallhaven_detail_mem() -> &'static Mutex<HashMap<String, Wallhaven
 
 pub(crate) fn wallhaven_detail_inflight(
 ) -> &'static Mutex<HashMap<String, Vec<mpsc::Sender<Result<WallhavenDetails>>>>> {
-    static INFLIGHT: OnceLock<
-        Mutex<HashMap<String, Vec<mpsc::Sender<Result<WallhavenDetails>>>>>,
-    > = OnceLock::new();
+    static INFLIGHT: OnceLock<Mutex<HashMap<String, Vec<mpsc::Sender<Result<WallhavenDetails>>>>>> =
+        OnceLock::new();
     INFLIGHT.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -226,7 +225,13 @@ pub fn begin_wallhaven_detail_warm(items: &[RemoteItem], api_key: &str) {
     let ids: Vec<String> = items
         .iter()
         .filter(|it| it.tags.is_empty() && it.url.contains("wallhaven"))
-        .filter_map(|it| it.id.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string))
+        .filter_map(|it| {
+            it.id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        })
         .filter(|id| cached_wallhaven_details(id).is_none())
         .collect();
     if ids.is_empty() {
@@ -236,7 +241,9 @@ pub fn begin_wallhaven_detail_warm(items: &[RemoteItem], api_key: &str) {
     let api_key = api_key.to_string();
     let (tx, rx) = mpsc::channel::<(u64, String)>();
     let rx = std::sync::Arc::new(Mutex::new(rx));
-    let workers = WALLHAVEN_DETAIL_HTTP_MAX.min(ids.len()).max(1);
+    let workers = source_detail_concurrency("wallhaven", !api_key.trim().is_empty())
+        .min(ids.len())
+        .max(1);
     for _ in 0..workers {
         let rx = std::sync::Arc::clone(&rx);
         let api_key = api_key.clone();
@@ -256,14 +263,14 @@ pub fn begin_wallhaven_detail_warm(items: &[RemoteItem], api_key: &str) {
     }
 }
 
+pub fn cancel_wallhaven_detail_warm() {
+    use std::sync::atomic::Ordering;
+    wallhaven_warm_gen().fetch_add(1, Ordering::Relaxed);
+}
+
 pub(crate) fn wallhaven_details_http(id: &str, api_key: &str) -> Result<WallhavenDetails> {
     let url = format!("https://wallhaven.cc/api/v1/w/{}", urlencoding_lite(id));
-    let mut req = listing_agent().get(&url);
-    if !api_key.trim().is_empty() {
-        req = req.set("X-API-Key", api_key.trim());
-    }
-    let parsed: WallhavenDetailResponse = req
-        .call()
+    let parsed: WallhavenDetailResponse = crate::wallhaven::wallhaven_api_get(&url, api_key)
         .with_context(|| format!("wallhaven details {id}"))?
         .into_json()
         .context("wallhaven details json")?;
@@ -376,14 +383,12 @@ pub(crate) fn normalize_hex_color(s: &str) -> Option<String> {
 }
 
 pub(crate) fn wallhaven_avatar_url(av: &WallhavenAvatar) -> Option<String> {
-    [&av.px32, &av.px128, &av.px200]
-        .into_iter()
-        .find_map(|u| {
-            u.as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-        })
+    [&av.px32, &av.px128, &av.px200].into_iter().find_map(|u| {
+        u.as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    })
 }
 
 #[derive(Deserialize)]
@@ -492,9 +497,7 @@ pub fn fetch_archive_details(id: &str) -> Result<ArchiveDetails> {
 
 pub(crate) fn archive_details_http(id: &str) -> Result<ArchiveDetails> {
     let url = format!("https://archive.org/metadata/{}", urlencoding_lite(id));
-    let raw: Value = archive_agent()
-        .get(&url)
-        .call()
+    let raw: Value = limited_get(&url, "archive", RequestClass::Detail, false)
         .with_context(|| format!("archive.org metadata {id}"))?
         .into_json()
         .context("archive.org metadata json")?;
@@ -516,7 +519,10 @@ pub(crate) fn archive_views_http(id: &str) -> Option<u64> {
         "https://archive.org/advancedsearch.php?q=identifier:{}&fl[]=downloads&rows=1&output=json",
         urlencoding_lite(id)
     );
-    let raw: Value = archive_agent().get(&url).call().ok()?.into_json().ok()?;
+    let raw: Value = limited_get(&url, "archive", RequestClass::Detail, false)
+        .ok()?
+        .into_json()
+        .ok()?;
     let doc = raw
         .pointer("/response/docs/0")
         .or_else(|| raw.pointer("/response/docs")?.as_array()?.first())?;
@@ -550,8 +556,7 @@ pub(crate) fn archive_details_from_json(raw: &Value) -> ArchiveDetails {
         .and_then(json_u64)
         .or_else(|| raw.pointer("/item/item_size").and_then(json_u64))
         .or_else(|| md.get("item_size").and_then(json_u64));
-    let runtime = json_stringish(md.get("runtime"))
-        .and_then(|s| parse_archive_runtime(&s));
+    let runtime = json_stringish(md.get("runtime")).and_then(|s| parse_archive_runtime(&s));
     let files = raw
         .get("files")
         .and_then(|v| v.as_array())
@@ -571,11 +576,23 @@ pub(crate) fn archive_details_from_json(raw: &Value) -> ArchiveDetails {
                 .extension()
                 .and_then(|e| e.to_str())
                 .map(|e| e.to_ascii_lowercase());
-            let video = ext.as_deref().is_some_and(|e| matches!(e, "mp4" | "webm" | "mkv" | "ogv"));
-            let image = ext.as_deref().is_some_and(|e| matches!(e, "jpg" | "jpeg" | "png" | "gif" | "webp"));
+            let video = ext
+                .as_deref()
+                .is_some_and(|e| matches!(e, "mp4" | "webm" | "mkv" | "ogv"));
+            let image = ext
+                .as_deref()
+                .is_some_and(|e| matches!(e, "jpg" | "jpeg" | "png" | "gif" | "webp"));
             (sz, w, h, dur, ext, video, image)
         }
-        None => (item_size, None, None, runtime, None, mediatype.as_deref() == Some("movies"), mediatype.as_deref() == Some("image")),
+        None => (
+            item_size,
+            None,
+            None,
+            runtime,
+            None,
+            mediatype.as_deref() == Some("movies"),
+            mediatype.as_deref() == Some("image"),
+        ),
     };
     ArchiveDetails {
         title,
@@ -659,7 +676,11 @@ pub(crate) fn archive_license_label(raw: &str) -> Option<String> {
             return Some(format!("Public Domain Mark {}", ver.trim_matches('/')));
         }
         if let Some(rest) = path.strip_prefix("licenses/") {
-            let parts: Vec<&str> = rest.trim_matches('/').split('/').filter(|p| !p.is_empty()).collect();
+            let parts: Vec<&str> = rest
+                .trim_matches('/')
+                .split('/')
+                .filter(|p| !p.is_empty())
+                .collect();
             if let Some(code_raw) = parts.first() {
                 let code = code_raw
                     .split('-')
@@ -812,9 +833,7 @@ pub(crate) fn github_user_avatar(login: &str, api_avatar: Option<&str>) -> Optio
     let login = login.trim();
     if !login.is_empty()
         && login.len() <= 39
-        && login
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && login.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
     {
         return Some(format!("https://github.com/{login}.png?size=64"));
     }
@@ -888,9 +907,7 @@ pub fn fetch_github_details(item: &RemoteItem, api_key: &str) -> Result<GitHubDe
     if need_probe {
         let probe = probe_remote_video_stats(&item.url);
         if details.duration_secs.is_none() {
-            details.duration_secs = probe
-                .duration_secs
-                .filter(|n| n.is_finite() && *n > 0.0);
+            details.duration_secs = probe.duration_secs.filter(|n| n.is_finite() && *n > 0.0);
         }
         if details.width.unwrap_or(0) == 0 {
             details.width = probe.width.filter(|n| *n > 0);
@@ -1023,4 +1040,3 @@ pub(crate) fn apply_github_repo_topics(items: &mut [RemoteItem], repo: &str, tok
         }
     }
 }
-

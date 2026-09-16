@@ -1,4 +1,3 @@
-
 use std::cell::Cell;
 use std::io::Read;
 use std::os::unix::process::CommandExt;
@@ -16,8 +15,9 @@ use gtk::{
     Orientation, Overlay, Paned, Picture, PolicyType, ScrolledWindow, SpinButton, Spinner, Switch,
 };
 use nwall_catalog as catalog;
-use nwall_ipc::{client_request, default_config_path, is_video,
-    normalize_preview_width_pct, Config, Request, Response,
+use nwall_ipc::{
+    client_request, default_config_path, is_video, normalize_preview_width_pct, Config, Request,
+    Response,
 };
 
 use crate::consts::*;
@@ -60,7 +60,10 @@ impl Drop for PreviewSession {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if self.paused.swap(false, Ordering::SeqCst) {
-            signal_pg(self.pid.load(Ordering::SeqCst), nix::sys::signal::Signal::SIGCONT);
+            signal_pg(
+                self.pid.load(Ordering::SeqCst),
+                nix::sys::signal::Signal::SIGCONT,
+            );
         }
         kill_pg(self.pid.load(Ordering::SeqCst));
     }
@@ -204,11 +207,7 @@ pub(crate) fn make_fixed_preview() -> (AspectFrame, Picture, PreviewLoading) {
     aspect.set_halign(Align::Fill);
     aspect.set_valign(Align::Start);
     aspect.set_child(Some(&host));
-    (
-        aspect,
-        preview_pic,
-        PreviewLoading { layer, spinner },
-    )
+    (aspect, preview_pic, PreviewLoading { layer, spinner })
 }
 
 pub(crate) fn new_preview_sidebar() -> GtkBox {
@@ -619,7 +618,9 @@ pub(crate) fn ffmpeg_scale_tile(src: &Path) -> Option<PathBuf> {
     let dest = scaled_tile_cache_path(src);
     let tmp = dest.with_file_name(format!(
         "{}.part",
-        dest.file_name().and_then(|s| s.to_str()).unwrap_or("tile.png")
+        dest.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("tile.png")
     ));
     let _ = std::fs::remove_file(&tmp);
     let mut cmd = ffmpeg_cmd();
@@ -630,7 +631,9 @@ pub(crate) fn ffmpeg_scale_tile(src: &Path) -> Option<PathBuf> {
         .arg("-frames:v")
         .arg("1")
         .arg("-vf")
-        .arg(format!("scale={TILE_DECODE_W}:{TILE_DECODE_H}:force_original_aspect_ratio=decrease"))
+        .arg(format!(
+            "scale={TILE_DECODE_W}:{TILE_DECODE_H}:force_original_aspect_ratio=decrease"
+        ))
         .arg(&tmp)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -651,8 +654,7 @@ pub(crate) fn ffmpeg_scale_tile(src: &Path) -> Option<PathBuf> {
 }
 
 pub(crate) fn pixbuf_scale_tile(src: &Path, dest: &Path) -> bool {
-    let Ok(pb) =
-        gdk_pixbuf::Pixbuf::from_file_at_scale(src, TILE_DECODE_W, TILE_DECODE_H, true)
+    let Ok(pb) = gdk_pixbuf::Pixbuf::from_file_at_scale(src, TILE_DECODE_W, TILE_DECODE_H, true)
     else {
         return false;
     };
@@ -665,8 +667,7 @@ pub(crate) fn ensure_scaled_tile(src: &Path) -> Option<PathBuf> {
     }
     let len = src.metadata().map(|m| m.len()).unwrap_or(0);
     if len > 0 && len <= TILE_RAW_MAX_BYTES {
-        if gdk_pixbuf::Pixbuf::from_file_at_scale(src, TILE_DECODE_W, TILE_DECODE_H, true).is_ok()
-        {
+        if gdk_pixbuf::Pixbuf::from_file_at_scale(src, TILE_DECODE_W, TILE_DECODE_H, true).is_ok() {
             return Some(src.to_path_buf());
         }
         return ffmpeg_scale_tile(src);
@@ -780,6 +781,7 @@ pub(crate) fn refresh_bg_music_ui(
     path: Option<&Path>,
     file_btn: &Button,
     archive_btn: &Button,
+    yt_btn: &Button,
     remove_btn: &Button,
     mute: &Switch,
     vol: &SpinButton,
@@ -791,6 +793,7 @@ pub(crate) fn refresh_bg_music_ui(
     let Some(path) = path.filter(|p| p.is_file()) else {
         file_btn.set_sensitive(false);
         archive_btn.set_sensitive(false);
+        yt_btn.set_sensitive(false);
         remove_btn.set_visible(false);
         mute_row.set_visible(false);
         vol_row.set_visible(false);
@@ -799,6 +802,7 @@ pub(crate) fn refresh_bg_music_ui(
     };
     file_btn.set_sensitive(true);
     archive_btn.set_sensitive(true);
+    yt_btn.set_sensitive(true);
     let meta = catalog::load_path_meta(path);
     let music = meta
         .as_ref()
@@ -852,8 +856,6 @@ pub(crate) fn arm_preview_loading(loading: &PreviewLoading, gen: &Arc<AtomicU64>
         loading.set_busy(false);
     });
 }
-
-
 
 pub(crate) fn start_live_preview(
     input: String,
@@ -1231,4 +1233,3 @@ pub(crate) fn bind_thumb(pic: &Picture, path: PathBuf, video: bool) {
         video: true,
     });
 }
-

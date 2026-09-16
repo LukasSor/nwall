@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 
-use nwall_ipc::is_video;
 use super::*;
+use nwall_ipc::is_video;
 
 #[derive(Deserialize)]
 pub(crate) struct IndexFile {
@@ -24,10 +24,8 @@ pub(crate) struct IndexItem {
 }
 
 pub(crate) fn fetch_index(url: &str) -> Result<Vec<RemoteItem>> {
-    let text = listing_agent()
-        .get(url)
-        .call()
-        .with_context(|| format!("GET {url}"))?
+    let text = limited_get(url, "index", RequestClass::Listing, false)
+        .with_context(|| "catalog index")?
         .into_string()
         .context("index body")?;
     if let Ok(file) = serde_json::from_str::<IndexFile>(&text) {
@@ -61,4 +59,3 @@ pub(crate) fn index_item(it: IndexItem) -> Option<RemoteItem> {
         ..Default::default()
     })
 }
-

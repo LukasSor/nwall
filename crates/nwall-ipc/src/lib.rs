@@ -774,11 +774,7 @@ fn migrate_github_pack_source(sources: &mut Vec<CatalogSource>) {
             s.path.clear();
         }
         for d in &defaults {
-            if !s
-                .repos
-                .iter()
-                .any(|r| r.repo == d.repo && r.path == d.path)
-            {
+            if !s.repos.iter().any(|r| r.repo == d.repo && r.path == d.path) {
                 s.repos.push(d.clone());
             }
         }
@@ -846,9 +842,7 @@ pub fn resolve_catalog_source<'a>(
         .or_else(|| {
             let lower = n.to_ascii_lowercase();
             if lower == "bing" || lower == "bing daily" || lower.contains("bing") {
-                sources
-                    .iter()
-                    .find(|s| s.kind.eq_ignore_ascii_case("bing"))
+                sources.iter().find(|s| s.kind.eq_ignore_ascii_case("bing"))
             } else if lower == "wallhaven" || lower.contains("wallhaven") {
                 sources
                     .iter()
@@ -1081,9 +1075,7 @@ impl Response {
     }
 
     pub fn err(msg: impl Into<String>) -> Self {
-        Self::Error {
-            error: msg.into(),
-        }
+        Self::Error { error: msg.into() }
     }
 }
 
@@ -1131,6 +1123,18 @@ pub fn is_audio(path: &Path) -> bool {
             .and_then(|e| e.to_str())
             .map(|e| e.to_ascii_lowercase())
             .as_deref(),
-        Some("mp3" | "ogg" | "oga" | "flac" | "m4a" | "aac" | "wav" | "opus" | "wma")
+        Some(
+            "mp3"
+                | "ogg"
+                | "oga"
+                | "flac"
+                | "m4a"
+                | "aac"
+                | "wav"
+                | "opus"
+                | "wma"
+                | "webm"
+                | "weba"
+        )
     )
 }

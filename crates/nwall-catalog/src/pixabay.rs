@@ -1,4 +1,3 @@
-
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 
@@ -107,9 +106,7 @@ pub(crate) fn fetch_pixabay_photos(
         #[serde(default, rename = "pageURL")]
         page_url: String,
     }
-    let parsed: PixabayPhotos = listing_agent()
-        .get(&url)
-        .call()
+    let parsed: PixabayPhotos = limited_get(&url, "pixabay", RequestClass::Listing, true)
         .context("pixabay photos")?
         .into_json()
         .context("pixabay photos json")?;
@@ -242,9 +239,7 @@ pub(crate) fn fetch_pixabay_videos(
         #[serde(default)]
         thumbnail: String,
     }
-    let parsed: PixabayVideos = listing_agent()
-        .get(&url)
-        .call()
+    let parsed: PixabayVideos = limited_get(&url, "pixabay", RequestClass::Listing, true)
         .context("pixabay videos")?
         .into_json()
         .context("pixabay videos json")?;
@@ -265,11 +260,23 @@ pub(crate) fn fetch_pixabay_videos(
             let (tags, name) = pixabay_tags_name(&h.tags, h.id);
             // Prefer the smallest still for Discover tiles (scaled further in the GUI).
             let thumb = [
-                vids.tiny.as_ref().map(|f| f.thumbnail.as_str()).unwrap_or(""),
-                vids.small.as_ref().map(|f| f.thumbnail.as_str()).unwrap_or(""),
+                vids.tiny
+                    .as_ref()
+                    .map(|f| f.thumbnail.as_str())
+                    .unwrap_or(""),
+                vids.small
+                    .as_ref()
+                    .map(|f| f.thumbnail.as_str())
+                    .unwrap_or(""),
                 file.thumbnail.as_str(),
-                vids.medium.as_ref().map(|f| f.thumbnail.as_str()).unwrap_or(""),
-                vids.large.as_ref().map(|f| f.thumbnail.as_str()).unwrap_or(""),
+                vids.medium
+                    .as_ref()
+                    .map(|f| f.thumbnail.as_str())
+                    .unwrap_or(""),
+                vids.large
+                    .as_ref()
+                    .map(|f| f.thumbnail.as_str())
+                    .unwrap_or(""),
             ]
             .into_iter()
             .find(|u| !u.is_empty())
@@ -290,10 +297,12 @@ pub(crate) fn fetch_pixabay_videos(
             ]
             .into_iter()
             .flatten()
-            .find_map(|f| match (f.width.filter(|n| *n > 0), f.height.filter(|n| *n > 0)) {
-                (Some(w), Some(h)) => Some((w, h)),
-                _ => None,
-            })
+            .find_map(
+                |f| match (f.width.filter(|n| *n > 0), f.height.filter(|n| *n > 0)) {
+                    (Some(w), Some(h)) => Some((w, h)),
+                    _ => None,
+                },
+            )
             .map(|(w, h)| (Some(w), Some(h)))
             .unwrap_or((
                 file.width.filter(|n| *n > 0),
@@ -429,4 +438,3 @@ pub(crate) fn fetch_pixabay(opts: &SearchOpts, api_key: &str) -> Result<FetchRes
         }
     }
 }
-

@@ -22,4 +22,5 @@ Thumbs.db
 # Local secrets — real config lives in ~/.config/nwall/
 .env
 .env.*
+/env
 /config.toml

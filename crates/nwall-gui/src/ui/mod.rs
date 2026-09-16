@@ -17,31 +17,26 @@ use std::time::Duration;
 
 use adw::prelude::*;
 use gtk::{
-    gdk, gio, glib, Align, Box as GtkBox, Button, DropDown, Entry, FileDialog,
-    FlowBox, HeaderBar, Image, Label, MenuButton, Orientation, Picture, PolicyType, Popover,
-    ScrolledWindow, Separator, SpinButton, Stack, StackSwitcher, StringList,
-    Switch,
+    gdk, gio, glib, Align, Box as GtkBox, Button, DropDown, Entry, FileDialog, FlowBox, HeaderBar,
+    Image, Label, MenuButton, Orientation, Picture, PolicyType, Popover, ScrolledWindow, Separator,
+    SpinButton, Stack, StackSwitcher, StringList, Switch,
 };
 use nwall_catalog as catalog;
-use nwall_ipc::{client_request, config_dir, default_config_path, is_audio,
-    is_video, normalize_preview_width_pct, Config, FitMode,
-    Request,
+use nwall_ipc::{
+    client_request, config_dir, default_config_path, is_audio, is_video,
+    normalize_preview_width_pct, Config, FitMode, Request,
 };
 
-use crate::app::{
-    fire_source_watchers, watch_sources, SourceWatchers,
-};
+use crate::app::{fire_source_watchers, watch_sources, SourceWatchers};
 use crate::consts::*;
 use crate::ipc_util::{apply_wallpaper, ipc_ok, push_playback};
 use crate::theme::{
     apply_theme, bind_window_zoom, install_app_icon, load_builtin_css, load_css,
     lock_tile_selection_chrome,
 };
-use crate::widgets::{
-    preview_option_row, set_video_playback_rows_visible, spin_with_percent,
-};
+use crate::widgets::{preview_option_row, set_video_playback_rows_visible, spin_with_percent};
 
-use self::bg_music::open_archive_music_dialog;
+use self::bg_music::{open_archive_music_dialog, open_yt_music_dialog};
 use self::discover::build_discover;
 use self::gallery::{
     child_path, compact_flow, empty_gallery_page, filter_gallery, gallery_dirs, refresh_gallery,
@@ -49,12 +44,11 @@ use self::gallery::{
 };
 use self::monitors::{fill_monitor_bar, refresh_monitor_mocks};
 use self::preview::{
-    apply_sidebar_pct, bind_preview_host_size, bind_preview_split, debounce_persist_interface,
-    bind_preview_visibility_pause, fill_sidebar_button, make_fixed_preview, make_preview_split,
-    new_preview_sidebar,
-    persist_interface, persist_show_monitors, preview_caption_label, preview_section_label,
-    preview_sidebar_head, preview_stats_scroll, preview_title, refresh_bg_music_ui,
-    set_preview_title, show_preview, stop_live_preview, PreviewLoading,
+    apply_sidebar_pct, bind_preview_host_size, bind_preview_split, bind_preview_visibility_pause,
+    debounce_persist_interface, fill_sidebar_button, make_fixed_preview, make_preview_split,
+    new_preview_sidebar, persist_interface, persist_show_monitors, preview_caption_label,
+    preview_section_label, preview_sidebar_head, preview_stats_scroll, preview_title,
+    refresh_bg_music_ui, set_preview_title, show_preview, stop_live_preview, PreviewLoading,
     PreviewSession,
 };
 use self::settings::build_settings;
@@ -245,11 +239,12 @@ pub(crate) fn build(app: &adw::Application) {
     music_heading.set_hexpand(true);
     music_heading.add_css_class("heading");
     music_heading.set_tooltip_text(Some(
-        "Looping track for this wallpaper — pick a local file or Archive.org audio",
+        "Looping track for this wallpaper — pick a local file, Archive.org, or YouTube Music",
     ));
 
     let music_actions = GtkBox::new(Orientation::Horizontal, 6);
     music_actions.set_hexpand(true);
+    music_actions.set_homogeneous(true);
     let music_file_btn = Button::with_label("File");
     music_file_btn.set_sensitive(false);
     music_file_btn.set_tooltip_text(Some("Choose an mp3, ogg, flac, m4a, wav, …"));
@@ -258,8 +253,13 @@ pub(crate) fn build(app: &adw::Application) {
     music_archive_btn.set_sensitive(false);
     music_archive_btn.set_tooltip_text(Some("Search Internet Archive for background music"));
     fill_sidebar_button(&music_archive_btn);
+    let music_yt_btn = Button::with_label("YT Music");
+    music_yt_btn.set_sensitive(false);
+    music_yt_btn.set_tooltip_text(Some("Search YouTube Music"));
+    fill_sidebar_button(&music_yt_btn);
     music_actions.append(&music_file_btn);
     music_actions.append(&music_archive_btn);
+    music_actions.append(&music_yt_btn);
 
     let remove_music_btn = Button::with_label("Remove");
     remove_music_btn.set_visible(false);
@@ -420,16 +420,20 @@ pub(crate) fn build(app: &adw::Application) {
         });
     }
     {
-        settings.fast_image_preview.connect_active_notify(move |sw| {
-            let mut cfg = Config::load(&default_config_path()).unwrap_or_default();
-            cfg.fast_image_preview = sw.is_active();
-            let _ = cfg.save(&default_config_path());
-        });
-        settings.fast_video_preview.connect_active_notify(move |sw| {
-            let mut cfg = Config::load(&default_config_path()).unwrap_or_default();
-            cfg.fast_video_preview = sw.is_active();
-            let _ = cfg.save(&default_config_path());
-        });
+        settings
+            .fast_image_preview
+            .connect_active_notify(move |sw| {
+                let mut cfg = Config::load(&default_config_path()).unwrap_or_default();
+                cfg.fast_image_preview = sw.is_active();
+                let _ = cfg.save(&default_config_path());
+            });
+        settings
+            .fast_video_preview
+            .connect_active_notify(move |sw| {
+                let mut cfg = Config::load(&default_config_path()).unwrap_or_default();
+                cfg.fast_video_preview = sw.is_active();
+                let _ = cfg.save(&default_config_path());
+            });
     }
     {
         let apply_library = {
@@ -584,6 +588,7 @@ pub(crate) fn build(app: &adw::Application) {
     let delete_s = delete_btn.clone();
     let music_btn_s = music_file_btn.clone();
     let music_archive_s = music_archive_btn.clone();
+    let music_yt_s = music_yt_btn.clone();
     let remove_music_s = remove_music_btn.clone();
     let music_name_s = music_name.clone();
     let bg_mute_s = bg_mute.clone();
@@ -617,6 +622,7 @@ pub(crate) fn build(app: &adw::Application) {
             Some(&path),
             &music_btn_s,
             &music_archive_s,
+            &music_yt_s,
             &remove_music_s,
             &bg_mute_s,
             &bg_vol_s,
@@ -745,6 +751,7 @@ pub(crate) fn build(app: &adw::Application) {
     let delete_d = delete_btn.clone();
     let music_btn_d = music_file_btn.clone();
     let music_archive_d = music_archive_btn.clone();
+    let music_yt_d = music_yt_btn.clone();
     let remove_music_d = remove_music_btn.clone();
     let music_name_d = music_name.clone();
     let bg_mute_d = bg_mute.clone();
@@ -791,6 +798,7 @@ pub(crate) fn build(app: &adw::Application) {
         let delete = delete_d.clone();
         let music_btn = music_btn_d.clone();
         let music_archive = music_archive_d.clone();
+        let music_yt = music_yt_d.clone();
         let remove_music = remove_music_d.clone();
         let music_name = music_name_d.clone();
         let bg_mute = bg_mute_d.clone();
@@ -822,6 +830,7 @@ pub(crate) fn build(app: &adw::Application) {
                         None,
                         &music_btn,
                         &music_archive,
+                        &music_yt,
                         &remove_music,
                         &bg_mute,
                         &bg_vol,
@@ -847,6 +856,7 @@ pub(crate) fn build(app: &adw::Application) {
     let status_m = status.clone();
     let music_btn_m = music_file_btn.clone();
     let music_archive_m = music_archive_btn.clone();
+    let music_yt_m = music_yt_btn.clone();
     let remove_music_m = remove_music_btn.clone();
     let music_name_m = music_name.clone();
     let bg_mute_m = bg_mute.clone();
@@ -863,9 +873,7 @@ pub(crate) fn build(app: &adw::Application) {
             status_m.set_text("Background music needs a local wallpaper file");
             return;
         }
-        let dialog = FileDialog::builder()
-            .title("Add background music")
-            .build();
+        let dialog = FileDialog::builder().title("Add background music").build();
         let filters = gio::ListStore::new::<gtk::FileFilter>();
         let audio = gtk::FileFilter::new();
         audio.set_name(Some("Audio"));
@@ -882,8 +890,9 @@ pub(crate) fn build(app: &adw::Application) {
         ] {
             audio.add_mime_type(mime);
         }
-        for pat in ["*.mp3", "*.ogg", "*.oga", "*.flac", "*.m4a", "*.aac", "*.wav", "*.opus", "*.wma"]
-        {
+        for pat in [
+            "*.mp3", "*.ogg", "*.oga", "*.flac", "*.m4a", "*.aac", "*.wav", "*.opus", "*.wma",
+        ] {
             audio.add_pattern(pat);
         }
         filters.append(&audio);
@@ -896,6 +905,7 @@ pub(crate) fn build(app: &adw::Application) {
         let status = status_m.clone();
         let music_btn = music_btn_m.clone();
         let music_archive = music_archive_m.clone();
+        let music_yt = music_yt_m.clone();
         let remove_music = remove_music_m.clone();
         let music_name = music_name_m.clone();
         let bg_mute = bg_mute_m.clone();
@@ -903,8 +913,10 @@ pub(crate) fn build(app: &adw::Application) {
         let bg_mute_row = bg_mute_row_m.clone();
         let bg_vol_row = bg_vol_row_m.clone();
         let suppress_bg = Rc::clone(&suppress_bg_m);
-        dialog.open(Some(&win_m), Option::<&gio::Cancellable>::None, move |res| {
-            match res {
+        dialog.open(
+            Some(&win_m),
+            Option::<&gio::Cancellable>::None,
+            move |res| match res {
                 Ok(file) => {
                     let Some(path) = file.path() else {
                         status.set_text("Could not read audio path");
@@ -930,6 +942,7 @@ pub(crate) fn build(app: &adw::Application) {
                                 Some(&wall),
                                 &music_btn,
                                 &music_archive,
+                                &music_yt,
                                 &remove_music,
                                 &bg_mute,
                                 &bg_vol,
@@ -940,9 +953,7 @@ pub(crate) fn build(app: &adw::Application) {
                             );
                             status.set_text(&format!(
                                 "Background music: {}",
-                                path.file_name()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("audio")
+                                path.file_name().and_then(|s| s.to_str()).unwrap_or("audio")
                             ));
                         }
                         Err(e) => status.set_text(&format!("Music failed: {e:#}")),
@@ -950,8 +961,8 @@ pub(crate) fn build(app: &adw::Application) {
                 }
                 Err(e) if e.matches(gtk::DialogError::Dismissed) => {}
                 Err(e) => status.set_text(&format!("Music picker: {e}")),
-            }
-        });
+            },
+        );
     });
 
     {
@@ -960,6 +971,7 @@ pub(crate) fn build(app: &adw::Application) {
         let status = status.clone();
         let music_btn = music_file_btn.clone();
         let music_archive = music_archive_btn.clone();
+        let music_yt = music_yt_btn.clone();
         let remove_music = remove_music_btn.clone();
         let music_name = music_name.clone();
         let bg_mute = bg_mute.clone();
@@ -981,6 +993,46 @@ pub(crate) fn build(app: &adw::Application) {
                 &status,
                 &music_btn,
                 &music_archive,
+                &music_yt,
+                &remove_music,
+                &bg_mute,
+                &bg_vol,
+                &bg_mute_row,
+                &bg_vol_row,
+                &music_name,
+            );
+        });
+    }
+
+    {
+        let win = window.clone();
+        let selected = Arc::clone(&selected);
+        let status = status.clone();
+        let music_btn = music_file_btn.clone();
+        let music_archive = music_archive_btn.clone();
+        let music_yt = music_yt_btn.clone();
+        let remove_music = remove_music_btn.clone();
+        let music_name = music_name.clone();
+        let bg_mute = bg_mute.clone();
+        let bg_vol = bg_vol.clone();
+        let bg_mute_row = bg_mute_row.clone();
+        let bg_vol_row = bg_vol_row.clone();
+        music_yt_btn.connect_clicked(move |_| {
+            let Some(wall) = selected.lock().unwrap().clone() else {
+                status.set_text("Select a wallpaper first");
+                return;
+            };
+            if !wall.is_file() {
+                status.set_text("Background music needs a local wallpaper file");
+                return;
+            }
+            open_yt_music_dialog(
+                &win,
+                wall,
+                &status,
+                &music_btn,
+                &music_archive,
+                &music_yt,
                 &remove_music,
                 &bg_mute,
                 &bg_vol,
@@ -995,6 +1047,7 @@ pub(crate) fn build(app: &adw::Application) {
     let status_rm = status.clone();
     let music_btn_rm = music_file_btn.clone();
     let music_archive_rm = music_archive_btn.clone();
+    let music_yt_rm = music_yt_btn.clone();
     let remove_music_rm = remove_music_btn.clone();
     let music_name_rm = music_name.clone();
     let bg_mute_rm = bg_mute.clone();
@@ -1018,6 +1071,7 @@ pub(crate) fn build(app: &adw::Application) {
                     Some(&wall),
                     &music_btn_rm,
                     &music_archive_rm,
+                    &music_yt_rm,
                     &remove_music_rm,
                     &bg_mute_rm,
                     &bg_vol_rm,
@@ -1035,6 +1089,7 @@ pub(crate) fn build(app: &adw::Application) {
     {
         let file_btn = music_file_btn.clone();
         let archive_btn = music_archive_btn.clone();
+        let yt_btn = music_yt_btn.clone();
         let remove_btn = remove_music_btn.clone();
         let mute = bg_mute.clone();
         let vol = bg_vol.clone();
@@ -1049,6 +1104,7 @@ pub(crate) fn build(app: &adw::Application) {
                 wall.as_deref(),
                 &file_btn,
                 &archive_btn,
+                &yt_btn,
                 &remove_btn,
                 &mute,
                 &vol,
@@ -1062,6 +1118,7 @@ pub(crate) fn build(app: &adw::Application) {
             None,
             &music_file_btn,
             &music_archive_btn,
+            &music_yt_btn,
             &remove_music_btn,
             &bg_mute,
             &bg_vol,
@@ -1138,6 +1195,7 @@ pub(crate) fn build(app: &adw::Application) {
     let delete_o = delete_btn.clone();
     let music_btn_o = music_file_btn.clone();
     let music_archive_o = music_archive_btn.clone();
+    let music_yt_o = music_yt_btn.clone();
     let remove_music_o = remove_music_btn.clone();
     let music_name_o = music_name.clone();
     let bg_mute_o = bg_mute.clone();
@@ -1182,6 +1240,7 @@ pub(crate) fn build(app: &adw::Application) {
         let delete = delete_o.clone();
         let music_btn = music_btn_o.clone();
         let music_archive = music_archive_o.clone();
+        let music_yt = music_yt_o.clone();
         let remove_music = remove_music_o.clone();
         let music_name = music_name_o.clone();
         let bg_mute = bg_mute_o.clone();
@@ -1195,8 +1254,10 @@ pub(crate) fn build(app: &adw::Application) {
         let fps_row = fps_row_o.clone();
         let mute_row = mute_row_o.clone();
         let vol_row = vol_row_o.clone();
-        dialog.open(Some(&win), Option::<&gio::Cancellable>::None, move |res| {
-            match res {
+        dialog.open(
+            Some(&win),
+            Option::<&gio::Cancellable>::None,
+            move |res| match res {
                 Ok(file) => {
                     if let Some(path) = file.path() {
                         after_wallpaper_added(
@@ -1217,6 +1278,7 @@ pub(crate) fn build(app: &adw::Application) {
                             &delete,
                             &music_btn,
                             &music_archive,
+                            &music_yt,
                             &remove_music,
                             &music_name,
                             &bg_mute,
@@ -1246,8 +1308,8 @@ pub(crate) fn build(app: &adw::Application) {
                     alert.add_response("ok", "OK");
                     alert.present(Some(&parent));
                 }
-            }
-        });
+            },
+        );
     });
 
     let win_yt = window.clone();
@@ -1269,6 +1331,7 @@ pub(crate) fn build(app: &adw::Application) {
     let delete_yt = delete_btn.clone();
     let music_btn_yt = music_file_btn.clone();
     let music_archive_yt = music_archive_btn.clone();
+    let music_ytmusic_yt = music_yt_btn.clone();
     let remove_music_yt = remove_music_btn.clone();
     let music_name_yt = music_name.clone();
     let bg_mute_yt = bg_mute.clone();
@@ -1290,7 +1353,9 @@ pub(crate) fn build(app: &adw::Application) {
         url_entry.set_width_chars(42);
         let alert = adw::AlertDialog::new(
             Some("Add from YouTube"),
-            Some("Paste a video URL. It will be downloaded into your wallpaper library with yt-dlp."),
+            Some(
+                "Paste a video URL. It will be downloaded into your wallpaper library with yt-dlp.",
+            ),
         );
         alert.set_extra_child(Some(&url_entry));
         alert.add_response("cancel", "Cancel");
@@ -1317,6 +1382,7 @@ pub(crate) fn build(app: &adw::Application) {
         let delete = delete_yt.clone();
         let music_btn = music_btn_yt.clone();
         let music_archive = music_archive_yt.clone();
+        let music_yt = music_ytmusic_yt.clone();
         let remove_music = remove_music_yt.clone();
         let music_name = music_name_yt.clone();
         let bg_mute = bg_mute_yt.clone();
@@ -1381,6 +1447,7 @@ pub(crate) fn build(app: &adw::Application) {
             let delete = delete.clone();
             let music_btn = music_btn.clone();
             let music_archive = music_archive.clone();
+            let music_yt = music_yt.clone();
             let remove_music = remove_music.clone();
             let music_name = music_name.clone();
             let bg_mute = bg_mute.clone();
@@ -1394,66 +1461,63 @@ pub(crate) fn build(app: &adw::Application) {
             let fps_row = fps_row.clone();
             let mute_row = mute_row.clone();
             let vol_row = vol_row.clone();
-            glib::timeout_add_local(Duration::from_millis(100), move || {
-                match rx.try_recv() {
-                    Ok(result) => {
-                        add_btn.set_sensitive(true);
-                        more_btn.set_sensitive(true);
-                        match result {
-                            Ok(path) => {
-                                let caption = catalog::library_caption(&path);
-                                after_wallpaper_added(
-                                    path,
-                                    Some(&format!("Downloaded {caption}")),
-                                    &body,
-                                    &flow,
-                                    &filter,
-                                    &search,
-                                    &status,
-                                    &selected,
-                                    &preview_pic,
-                                    &preview_name,
-                                    &preview_meta,
-                                    &preview_loading,
-                                    &preview_stats,
-                                    &apply,
-                                    &delete,
-                                    &music_btn,
-                                    &music_archive,
-                                    &remove_music,
-                                    &music_name,
-                                    &bg_mute,
-                                    &bg_vol,
-                                    &bg_mute_row,
-                                    &bg_vol_row,
-                                    &suppress_bg,
-                                    &live,
-                                    &gen,
-                                    &fps,
-                                    &fps_row,
-                                    &mute_row,
-                                    &vol_row,
-                                );
-                            }
-                            Err(e) => {
-                                status.set_text(&format!("YouTube download failed: {e}"));
-                                let err = adw::AlertDialog::new(
-                                    Some("YouTube download failed"),
-                                    Some(&e),
-                                );
-                                err.add_response("ok", "OK");
-                                err.present(Some(&parent));
-                            }
+            glib::timeout_add_local(Duration::from_millis(100), move || match rx.try_recv() {
+                Ok(result) => {
+                    add_btn.set_sensitive(true);
+                    more_btn.set_sensitive(true);
+                    match result {
+                        Ok(path) => {
+                            let caption = catalog::library_caption(&path);
+                            after_wallpaper_added(
+                                path,
+                                Some(&format!("Downloaded {caption}")),
+                                &body,
+                                &flow,
+                                &filter,
+                                &search,
+                                &status,
+                                &selected,
+                                &preview_pic,
+                                &preview_name,
+                                &preview_meta,
+                                &preview_loading,
+                                &preview_stats,
+                                &apply,
+                                &delete,
+                                &music_btn,
+                                &music_archive,
+                                &music_yt,
+                                &remove_music,
+                                &music_name,
+                                &bg_mute,
+                                &bg_vol,
+                                &bg_mute_row,
+                                &bg_vol_row,
+                                &suppress_bg,
+                                &live,
+                                &gen,
+                                &fps,
+                                &fps_row,
+                                &mute_row,
+                                &vol_row,
+                            );
                         }
-                        glib::ControlFlow::Break
+                        Err(e) => {
+                            status.set_text(&format!("YouTube download failed: {e}"));
+                            let err =
+                                adw::AlertDialog::new(Some("YouTube download failed"), Some(&e));
+                            err.add_response("ok", "OK");
+                            err.present(Some(&parent));
+                        }
                     }
-                    Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        add_btn.set_sensitive(true);
-                        more_btn.set_sensitive(true);
-                        status.set_text("YouTube download failed: worker exited");
-                        glib::ControlFlow::Break
-                    }
+                    glib::ControlFlow::Break
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    add_btn.set_sensitive(true);
+                    more_btn.set_sensitive(true);
+                    status.set_text("YouTube download failed: worker exited");
+                    glib::ControlFlow::Break
                 }
             });
         });
@@ -1500,6 +1564,7 @@ fn after_wallpaper_added(
     delete: &Button,
     music_btn: &Button,
     music_archive: &Button,
+    music_yt: &Button,
     remove_music: &Button,
     music_name: &Label,
     bg_mute: &Switch,
@@ -1533,6 +1598,7 @@ fn after_wallpaper_added(
         Some(&path),
         music_btn,
         music_archive,
+        music_yt,
         remove_music,
         bg_mute,
         bg_vol,
@@ -1663,4 +1729,3 @@ fn download_youtube_to_library(url: &str, library: &Path) -> Result<PathBuf, Str
     }
     Ok(path)
 }
-

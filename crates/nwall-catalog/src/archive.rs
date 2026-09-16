@@ -83,9 +83,7 @@ pub(crate) fn fetch_archive(opts: &SearchOpts) -> Result<FetchResult> {
         #[serde(default)]
         licenseurl: Option<Value>,
     }
-    let parsed: IaSearch = archive_agent()
-        .get(&url)
-        .call()
+    let parsed: IaSearch = limited_get(&url, "archive", RequestClass::Listing, false)
         .context("archive.org search")?
         .into_json()
         .context("archive.org json")?;
@@ -169,7 +167,7 @@ pub fn resolve_remote_url(url: &str) -> Result<String> {
     resolve_download_url(url)
 }
 
-pub(crate) fn archive_pick_file_url(http: &ureq::Agent, identifier: &str) -> Option<String> {
+pub(crate) fn archive_pick_file_url(identifier: &str) -> Option<String> {
     if let Some(name) = cached_archive_file_name(identifier) {
         return Some(format!(
             "https://archive.org/download/{identifier}/{}",
@@ -177,7 +175,7 @@ pub(crate) fn archive_pick_file_url(http: &ureq::Agent, identifier: &str) -> Opt
         ));
     }
     let meta_url = format!("https://archive.org/metadata/{identifier}/files");
-    let resp = match http.get(&meta_url).call() {
+    let resp = match limited_get(&meta_url, "archive", RequestClass::Detail, false) {
         Ok(r) => r,
         Err(e) => {
             log::warn!("archive.org files {identifier}: {e}");
@@ -274,4 +272,3 @@ pub(crate) fn percent_encode_path(path: &str) -> String {
         .collect::<Vec<_>>()
         .join("/")
 }
-

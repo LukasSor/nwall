@@ -1,20 +1,20 @@
-
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{
-    Align, Box as GtkBox, Button, CheckButton, DropDown, Entry, Grid, Label,
-    Orientation, PasswordEntry, PolicyType, ScrolledWindow, SpinButton, StringList, Switch,
+    Align, Box as GtkBox, Button, CheckButton, DropDown, Entry, Grid, Label, Orientation,
+    PasswordEntry, PolicyType, ScrolledWindow, SpinButton, StringList, Switch,
 };
 use nwall_catalog as catalog;
-use nwall_ipc::{client_request, default_config_path, is_library_source, normalize_preview_width_pct,
-    resolve_catalog_source, Config, FitMode, PausePolicy, Request,
-    Slideshow,
+use nwall_ipc::{
+    client_request, default_config_path, is_library_source, normalize_preview_width_pct,
+    resolve_catalog_source, Config, FitMode, PausePolicy, Request, Slideshow,
 };
 
 use crate::app::{
-    fire_source_watchers, replace_string_list, visible_catalog_sources, watch_sources, SourceWatchers,
+    fire_source_watchers, replace_string_list, visible_catalog_sources, watch_sources,
+    SourceWatchers,
 };
 use crate::consts::*;
 use crate::widgets::{
@@ -381,8 +381,7 @@ pub(crate) fn build_settings(cfg: &mut Config, source_watchers: SourceWatchers) 
     music_covered.set_tooltip_text(Some(
         "Pauses looping wallpaper music if any monitor's wallpaper is mostly covered",
     ));
-    let music_other_audio =
-        CheckButton::with_label("Pause when other apps play sound");
+    let music_other_audio = CheckButton::with_label("Pause when other apps play sound");
     music_other_audio.set_active(cfg.pause.music_on_other_audio);
     music_other_audio.set_tooltip_text(Some(
         "Uses PulseAudio/PipeWire; ignores nwall itself and common chat/VoIP apps",
@@ -410,9 +409,7 @@ pub(crate) fn build_settings(cfg: &mut Config, source_watchers: SourceWatchers) 
     let ss_show_tray = Switch::new();
     ss_show_tray.set_active(cfg.slideshow.show_in_tray);
     ss_show_tray.set_halign(Align::End);
-    ss_show_tray.set_tooltip_text(Some(
-        "Show Start/Stop slideshow in the system tray menu.",
-    ));
+    ss_show_tray.set_tooltip_text(Some("Show Start/Stop slideshow in the system tray menu."));
     page.append(&labeled_row("Show in tray", &ss_show_tray));
 
     let ss_interval = SpinButton::with_range(1.0, 1440.0, 1.0);
@@ -491,7 +488,10 @@ pub(crate) fn build_settings(cfg: &mut Config, source_watchers: SourceWatchers) 
     let preview_width = SpinButton::with_range(PREVIEW_PCT_MIN, PREVIEW_PCT_MAX, 1.0);
     preview_width.set_value(normalize_preview_width_pct(cfg.preview_width));
     preview_width.set_digits(0);
-    page.append(&labeled_row("Preview bar", spin_with_percent(&preview_width)));
+    page.append(&labeled_row(
+        "Preview bar",
+        spin_with_percent(&preview_width),
+    ));
 
     page.append(&section_label("Library"));
     let library_hint = Label::new(Some("Where your wallpapers live."));
@@ -547,9 +547,7 @@ pub(crate) fn build_settings(cfg: &mut Config, source_watchers: SourceWatchers) 
     let add_row = GtkBox::new(Orientation::Horizontal, 8);
     let src_entry = Entry::new();
     src_entry.set_hexpand(true);
-    src_entry.set_placeholder_text(Some(
-        "github.com/owner/repo  ·  https://…/catalog.json",
-    ));
+    src_entry.set_placeholder_text(Some("github.com/owner/repo  ·  https://…/catalog.json"));
     let add_btn = Button::with_label("Add");
     add_row.append(&src_entry);
     add_row.append(&add_btn);
@@ -569,7 +567,10 @@ pub(crate) fn build_settings(cfg: &mut Config, source_watchers: SourceWatchers) 
             return;
         };
         let mut cfg = Config::load(&default_config_path()).unwrap_or_default();
-        if !cfg.sources.iter().any(|s| s.name == src.name && s.url == src.url && s.repo == src.repo)
+        if !cfg
+            .sources
+            .iter()
+            .any(|s| s.name == src.name && s.url == src.url && s.repo == src.repo)
         {
             cfg.sources.push(src);
             let _ = cfg.save(&default_config_path());
@@ -712,4 +713,3 @@ pub(crate) fn attach_source_key_row(
         grid.attach(&slot, 2, row, 1, 1);
     }
 }
-

@@ -139,9 +139,10 @@ impl RemoteItem {
             self.tags = d.tags.clone();
         }
         if self.views.unwrap_or(0) == 0 {
-            self.views = d.views.filter(|n| *n > 0).or_else(|| {
-                self.downloads.filter(|n| *n > 0)
-            });
+            self.views = d
+                .views
+                .filter(|n| *n > 0)
+                .or_else(|| self.downloads.filter(|n| *n > 0));
         }
         if self.views.unwrap_or(0) > 0 {
             self.downloads = None;
@@ -223,7 +224,12 @@ impl RemoteItem {
             parts.push(format!("#{id}"));
         }
         let mut tip = parts.join(" · ");
-        if let Some(c) = self.credit.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(c) = self
+            .credit
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             if tip.is_empty() {
                 tip = c.to_string();
             } else {
@@ -252,10 +258,7 @@ impl RemoteItem {
 }
 
 pub(crate) fn fill_string(slot: &mut Option<String>, val: Option<String>) {
-    let blank = slot
-        .as_deref()
-        .map(|s| s.trim().is_empty())
-        .unwrap_or(true);
+    let blank = slot.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true);
     if blank {
         if let Some(v) = val {
             if !v.trim().is_empty() {
@@ -295,6 +298,49 @@ pub fn tag_file_stem(tags: &[String], n: usize) -> Option<String> {
     }
 }
 
+/// Wallpaper / video suffixes we strip from a download hint (not Bing `OHR.*` ids).
+pub(crate) fn is_known_filename_ext(ext: &str) -> bool {
+    matches!(
+        ext.trim()
+            .trim_start_matches('.')
+            .to_ascii_lowercase()
+            .as_str(),
+        "jpg"
+            | "jpeg"
+            | "png"
+            | "webp"
+            | "gif"
+            | "bmp"
+            | "mp4"
+            | "webm"
+            | "mkv"
+            | "avi"
+            | "mov"
+            | "m4v"
+    )
+}
+
+/// Strip `.jpg` (etc.) but keep source ids like `OHR.KochiaChina_EN-US…`.
+pub(crate) fn strip_known_filename_ext(name: &str) -> &str {
+    let name = name.trim();
+    let ext = Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    if is_known_filename_ext(ext) {
+        Path::new(name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(name)
+    } else {
+        name
+    }
+}
+
+pub(crate) fn stem_from_download_hint(hint: &str) -> String {
+    sanitize_file_stem(strip_known_filename_ext(hint))
+}
+
 /// Replace path separators and other unsafe filename characters with `-`.
 pub fn sanitize_file_stem(s: &str) -> String {
     let mut out = String::new();
@@ -302,7 +348,10 @@ pub fn sanitize_file_stem(s: &str) -> String {
     for c in s.chars() {
         let replace = c.is_control()
             || c.is_whitespace()
-            || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '.' | ',' | '·');
+            || matches!(
+                c,
+                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '.' | ',' | '·'
+            );
         if replace {
             if !out.is_empty() && !prev_dash {
                 out.push('-');
@@ -372,21 +421,13 @@ pub(crate) fn library_download_stem(item: &RemoteItem) -> String {
         .is_some_and(|s| !s.is_empty());
     if !has_id {
         let raw = item.name.trim();
-        let stem = Path::new(raw)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or(raw);
-        let s = sanitize_file_stem(stem);
+        let s = stem_from_download_hint(raw);
         if !s.is_empty() {
             return s;
         }
     }
     let hint = item.file_hint();
-    let hint_stem = Path::new(&hint)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(&hint);
-    let s = sanitize_file_stem(hint_stem);
+    let s = stem_from_download_hint(&hint);
     if s.is_empty() {
         hint
     } else {
@@ -519,12 +560,7 @@ pub(crate) fn ensure_archive_page_url(item: &mut RemoteItem) {
     if nonempty_opt(&item.page_url).is_some() {
         return;
     }
-    if let Some(id) = item
-        .id
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
+    if let Some(id) = item.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         item.page_url = Some(format!("https://archive.org/details/{id}"));
     }
 }
@@ -736,7 +772,10 @@ impl MediaStats {
         if probe.file_size.unwrap_or(0) > 0 {
             self.file_size = probe.file_size;
         }
-        if probe.duration_secs.is_some_and(|d| d.is_finite() && d > 0.0) {
+        if probe
+            .duration_secs
+            .is_some_and(|d| d.is_finite() && d > 0.0)
+        {
             self.duration_secs = probe.duration_secs;
         }
         if probe.fps.unwrap_or(0.0) > 0.0 {
@@ -928,9 +967,10 @@ impl MediaStats {
             self.tags = d.tags.clone();
         }
         if self.views.unwrap_or(0) == 0 {
-            self.views = d.views.filter(|n| *n > 0).or_else(|| {
-                self.downloads.filter(|n| *n > 0)
-            });
+            self.views = d
+                .views
+                .filter(|n| *n > 0)
+                .or_else(|| self.downloads.filter(|n| *n > 0));
         }
         if self.views.unwrap_or(0) > 0 {
             self.downloads = None;
@@ -1023,9 +1063,7 @@ impl MediaStats {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
-            .or_else(|| {
-                nonempty_opt(&self.credit).map(|c| canonical_source_label(c, None))
-            });
+            .or_else(|| nonempty_opt(&self.credit).map(|c| canonical_source_label(c, None)));
         if let Some(s) = &source {
             lines.push(format!("Source: {s}"));
         }
@@ -1275,10 +1313,7 @@ pub(crate) fn short_file_type(raw: &str) -> String {
         return String::new();
     }
     let lower = s.to_ascii_lowercase();
-    let leaf = lower
-        .rsplit(['/', '.'])
-        .next()
-        .unwrap_or(&lower);
+    let leaf = lower.rsplit(['/', '.']).next().unwrap_or(&lower);
     match leaf {
         "jpeg" | "jpg" => "JPEG".into(),
         "png" => "PNG".into(),
@@ -1304,4 +1339,3 @@ pub(crate) fn short_file_type(raw: &str) -> String {
         }
     }
 }
-

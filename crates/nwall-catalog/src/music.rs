@@ -15,8 +15,7 @@ const MUSIC_MAX_FILE_BYTES: u64 = 40_000_000;
 const MUSIC_HTTP_TIMEOUT_SECS: u64 = 45;
 const MUSIC_SEARCH_RETRIES: u32 = 3;
 
-const COLLECTION_BIAS: &str =
-    "collection:(freemusicarchive OR netlabels OR opensource_audio)";
+const COLLECTION_BIAS: &str = "collection:(freemusicarchive OR netlabels OR opensource_audio)";
 
 const STARTER_TRACKS: &[(&str, &str, &str)] = &[
     (
@@ -35,11 +34,7 @@ const STARTER_TRACKS: &[(&str, &str, &str)] = &[
         "Theory Of Colour",
         "Poodleplay Arkestra",
     ),
-    (
-        "pcr089EmilDavydov-Sketches",
-        "Sketches",
-        "Emil Davydov",
-    ),
+    ("pcr089EmilDavydov-Sketches", "Sketches", "Emil Davydov"),
     (
         "Vkrsnl037CandlegravityAMomentForMyself",
         "A Moment for Myself",
@@ -61,6 +56,8 @@ pub struct MusicTrack {
     pub download_url: Option<String>,
     pub size: Option<u64>,
     pub license_url: Option<String>,
+    pub thumb_url: Option<String>,
+    pub avatar: Option<String>,
 }
 
 fn music_agent() -> ureq::Agent {
@@ -82,6 +79,8 @@ fn track_from_starter(id: &str, title: &str, creator: &str) -> MusicTrack {
         download_url: None,
         size: None,
         license_url: None,
+        thumb_url: None,
+        avatar: None,
     }
 }
 
@@ -157,9 +156,7 @@ pub fn fetch_archive_music(query: &str, page: u32) -> Result<Vec<MusicTrack>> {
                 std::thread::sleep(Duration::from_millis(400 * u64::from(attempt)));
             }
         }
-        ok.ok_or_else(|| {
-            last_err.unwrap_or_else(|| anyhow!("archive.org music search failed"))
-        })?
+        ok.ok_or_else(|| last_err.unwrap_or_else(|| anyhow!("archive.org music search failed")))?
     };
 
     let mut docs: Vec<IaDoc> = parsed
@@ -194,8 +191,8 @@ pub fn fetch_archive_music(query: &str, page: u32) -> Result<Vec<MusicTrack>> {
                 .title
                 .filter(|t| !t.trim().is_empty())
                 .unwrap_or_else(|| id.clone());
-            let duration = json_stringish(doc.runtime.as_ref())
-                .and_then(|s| parse_archive_runtime(&s));
+            let duration =
+                json_stringish(doc.runtime.as_ref()).and_then(|s| parse_archive_runtime(&s));
             let size = json_stringish(doc.item_size.as_ref())
                 .and_then(|s| s.parse().ok())
                 .or_else(|| doc.item_size.as_ref().and_then(|v| v.as_u64()));
@@ -207,6 +204,8 @@ pub fn fetch_archive_music(query: &str, page: u32) -> Result<Vec<MusicTrack>> {
                 download_url: None,
                 size,
                 license_url: json_stringish(doc.licenseurl.as_ref()),
+                thumb_url: None,
+                avatar: None,
                 id,
             }
         })
@@ -216,9 +215,7 @@ pub fn fetch_archive_music(query: &str, page: u32) -> Result<Vec<MusicTrack>> {
 }
 
 /// Resolve a concrete audio file URL under an Archive.org item.
-pub fn resolve_archive_music_download(
-    id: &str,
-) -> Result<(String, Option<u64>, Option<f64>)> {
+pub fn resolve_archive_music_download(id: &str) -> Result<(String, Option<u64>, Option<f64>)> {
     let id = id.trim();
     if id.is_empty() {
         return Err(anyhow!("empty archive.org music id"));
@@ -242,9 +239,7 @@ pub fn resolve_archive_music_download(
                 std::thread::sleep(Duration::from_millis(400 * u64::from(attempt)));
             }
         }
-        ok.ok_or_else(|| {
-            last_err.unwrap_or_else(|| anyhow!("archive.org metadata {id} failed"))
-        })?
+        ok.ok_or_else(|| last_err.unwrap_or_else(|| anyhow!("archive.org metadata {id} failed")))?
     };
 
     let md = raw.get("metadata").cloned().unwrap_or(Value::Null);
@@ -296,7 +291,9 @@ pub fn fetch_archive_music_duration(id: &str) -> Option<f64> {
     // Fallback: longest audio length on the item.
     let mut best = 0.0_f64;
     for f in files {
-        let name = json_stringish(f.get("name")).unwrap_or_default().to_ascii_lowercase();
+        let name = json_stringish(f.get("name"))
+            .unwrap_or_default()
+            .to_ascii_lowercase();
         if audio_ext_rank(&name).is_none() || archive_skip_file_name(&name) {
             continue;
         }
@@ -362,11 +359,7 @@ fn pick_archive_music_file(files: &[Value]) -> Option<Value> {
             0
         };
         // Among same format+quality, prefer larger (better bitrate) but keep preview snappy.
-        let size_key = if sz == 0 {
-            0
-        } else {
-            sz.min(12_000_000)
-        };
+        let size_key = if sz == 0 { 0 } else { sz.min(12_000_000) };
         candidates.push((format_rank, quality_penalty, size_key, f.clone()));
     }
     candidates.sort_by(|a, b| {
@@ -489,10 +482,7 @@ mod tests {
             )
         });
         let path_str = path.to_string_lossy();
-        assert!(
-            path.is_file(),
-            "downloaded path should exist: {path_str}"
-        );
+        assert!(path.is_file(), "downloaded path should exist: {path_str}");
         assert!(
             path_str.contains("nwall") && path_str.contains("remote"),
             "expected cache path under nwall/remote, got {path_str}"
