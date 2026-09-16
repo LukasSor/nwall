@@ -1,4 +1,3 @@
-
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 
@@ -56,9 +55,7 @@ pub(crate) fn fetch_coverr(opts: &SearchOpts, api_key: &str) -> Result<FetchResu
         mp4_download: Option<String>,
         mp4_preview: Option<String>,
     }
-    let parsed: CoverrList = listing_agent()
-        .get(&url)
-        .call()
+    let parsed: CoverrList = limited_get(&url, "coverr", RequestClass::Listing, true)
         .context("coverr videos")?
         .into_json()
         .context("coverr json")?;
@@ -67,13 +64,7 @@ pub(crate) fn fetch_coverr(opts: &SearchOpts, api_key: &str) -> Result<FetchResu
         .pages
         .filter(|p| *p > 0)
         .or_else(|| parsed.total.and_then(|t| last_page_from_count(t, 20)))
-        .or_else(|| {
-            if n_hits < 20 {
-                Some(page)
-            } else {
-                None
-            }
-        });
+        .or_else(|| if n_hits < 20 { Some(page) } else { None });
     let items = parsed
         .hits
         .into_iter()
@@ -109,4 +100,3 @@ pub(crate) fn fetch_coverr(opts: &SearchOpts, api_key: &str) -> Result<FetchResu
         last_page,
     })
 }
-

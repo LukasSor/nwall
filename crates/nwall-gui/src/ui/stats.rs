@@ -1,4 +1,3 @@
-
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -12,7 +11,7 @@ use gtk::{
     gdk, gio, glib, Align, Box as GtkBox, FlowBox, FlowBoxChild, Grid, Label, Orientation, Overlay,
 };
 use nwall_catalog as catalog;
-use nwall_ipc::{is_video};
+use nwall_ipc::is_video;
 
 use crate::consts::*;
 use crate::ui::discover::remote_child_item;
@@ -228,10 +227,8 @@ impl StatsTable {
     }
 }
 
-/// Column 0 width: `max(natural labels, sidebar_width/2 − gap/2)`.
-/// `sidebar_width` is the `preview-sidebar` allocation (`bind_preview_host_size`).
 fn stats_label_col_width(sidebar_w: i32, natural: i32, gap: i32) -> i32 {
-    let half = (sidebar_w / 2 - gap / 2).max(0);
+    let half = (sidebar_w / 2 - gap / 2 + STATS_SPLIT_NUDGE).max(0);
     natural.max(half)
 }
 
@@ -443,7 +440,6 @@ fn nearest_css_class(start: &impl IsA<gtk::Widget>, class: &str) -> Option<gtk::
 }
 
 fn preview_sidebar_width(start: &impl IsA<gtk::Widget>) -> i32 {
-    // Same allocation `bind_preview_host_size` uses.
     if let Some(side) = nearest_css_class(start, "preview-sidebar") {
         let w = side.width();
         if w > 8 {
@@ -472,7 +468,6 @@ fn stats_split_width(start: &impl IsA<gtk::Widget>) -> i32 {
 }
 
 fn tag_layout_width(start: &impl IsA<gtk::Widget>) -> i32 {
-    // Same allocation bind_preview_host_size uses, minus sidebar margins.
     let side = preview_sidebar_width(start);
     if side > 8 {
         return (side - 24).max(8);
@@ -534,8 +529,6 @@ fn make_centered_tag_row(height: i32) -> (Overlay, GtkBox) {
     host.set_overflow(gtk::Overflow::Visible);
     host.add_css_class("preview-tags-row");
 
-    // Overlay chips are not measured, so row min-width stays ~0 and the
-    // paned can shrink. Height comes from this sizer only.
     let sizer = GtkBox::new(Orientation::Horizontal, 0);
     sizer.set_hexpand(true);
     sizer.set_halign(Align::Fill);
@@ -632,7 +625,11 @@ struct SidebarWidthHooks {
     stats: Option<Rc<dyn Fn()>>,
 }
 
-fn hook_sidebar_width(widget: &impl IsA<gtk::Widget>, kind: SidebarWidthKind, apply: &Rc<dyn Fn()>) {
+fn hook_sidebar_width(
+    widget: &impl IsA<gtk::Widget>,
+    kind: SidebarWidthKind,
+    apply: &Rc<dyn Fn()>,
+) {
     let Some(side) = nearest_css_class(widget, "preview-sidebar") else {
         return;
     };
@@ -680,12 +677,13 @@ fn sidebar_width_hooks(side: &gtk::Widget) -> Rc<RefCell<SidebarWidthHooks>> {
 pub(crate) fn stats_source_name(stats: &catalog::MediaStats) -> Option<String> {
     nonempty_gui(&stats.source)
         .map(str::to_string)
-        .or_else(|| {
-            nonempty_gui(&stats.credit).map(|c| catalog::canonical_source_label(c, None))
-        })
+        .or_else(|| nonempty_gui(&stats.credit).map(|c| catalog::canonical_source_label(c, None)))
 }
 
-pub(crate) fn stats_credit_display(stats: &catalog::MediaStats, source: Option<&str>) -> Option<String> {
+pub(crate) fn stats_credit_display(
+    stats: &catalog::MediaStats,
+    source: Option<&str>,
+) -> Option<String> {
     let c = nonempty_gui(&stats.credit)?;
     if source.is_some_and(|s| c.eq_ignore_ascii_case(s)) {
         return None;
@@ -859,13 +857,7 @@ pub(crate) fn apply_stats_widgets(
         } else {
             "Uploader"
         };
-        attach_stats_uploader(
-            &mut table,
-            label,
-            name,
-            stats.avatar.as_deref(),
-            avatar_gen,
-        );
+        attach_stats_uploader(&mut table, label, name, stats.avatar.as_deref(), avatar_gen);
     }
 
     let colors: Vec<&str> = stats
@@ -919,11 +911,7 @@ pub(crate) fn tag_bg_rgb(name: &str) -> (u8, u8, u8) {
     let hue = (h % 360) as f32;
     let sat = 0.26 + ((h >> 8) % 16) as f32 / 100.0;
     let dark_ui = adw::StyleManager::default().is_dark();
-    let (light_lo, light_hi) = if dark_ui {
-        (0.38, 0.49)
-    } else {
-        (0.78, 0.90)
-    };
+    let (light_lo, light_hi) = if dark_ui { (0.38, 0.49) } else { (0.78, 0.90) };
     let span = light_hi - light_lo;
     let light = light_lo + ((h >> 16) % 12) as f32 / 100.0 * span;
     hsl_to_rgb(hue, sat, light)
@@ -1195,7 +1183,12 @@ pub(crate) fn fill_gui_source(stats: &mut catalog::MediaStats, meta: &catalog::M
         stats.source = Some(src.to_string());
         return;
     }
-    if let Some(c) = meta.credit.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(c) = meta
+        .credit
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         stats.source = Some(catalog::canonical_source_label(c, meta.page_url.as_deref()));
     }
 }
@@ -1265,7 +1258,7 @@ pub(crate) fn enrich_wallhaven_tiles(
 
     let (tx, rx) = std::sync::mpsc::channel::<WallhavenEnrichJob>();
     let rx = Arc::new(Mutex::new(rx));
-    let workers = catalog::WALLHAVEN_DETAIL_HTTP_MAX
+    let workers = catalog::source_detail_concurrency("wallhaven", !api_key.trim().is_empty())
         .min(need_http.len())
         .max(1);
     for _ in 0..workers {
@@ -1406,7 +1399,10 @@ pub(crate) fn apply_github_details_to_tile(
     }
     child.set_tooltip_text(Some(&item.tooltip_label()));
     let selected = child.is_selected()
-        || pending.lock().ok().and_then(|g| g.as_ref().map(|i| i.url.clone()))
+        || pending
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|i| i.url.clone()))
             == Some(item.url.clone());
     if selected {
         if let Ok(mut g) = pending.lock() {
@@ -1426,4 +1422,3 @@ pub(crate) fn child_caption(child: &FlowBoxChild) -> Option<Label> {
             .map(|p| p.as_ref().clone())
     }
 }
-

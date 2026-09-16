@@ -6,6 +6,8 @@ use serde::Deserialize;
 
 use super::*;
 
+pub const WALLHAVEN_RATE_LIMIT_MSG: &str = "Wallhaven rate limit, try again in a moment";
+
 pub(crate) fn fetch_wallhaven(opts: &SearchOpts, api_key: &str) -> Result<FetchResult> {
     let page = opts.page();
     if opts.needs_wallhaven_key() && api_key.trim().is_empty() {
@@ -63,6 +65,21 @@ pub(crate) fn wallhaven_random_seed() -> String {
     format!("{v:016x}")
 }
 
+pub(crate) fn wallhaven_api_get(url: &str, api_key: &str) -> Result<ureq::Response> {
+    let has_key = !api_key.trim().is_empty();
+    note_source_auth("wallhaven", has_key);
+    let class = if url.contains("/api/v1/w/") {
+        RequestClass::Detail
+    } else {
+        RequestClass::Listing
+    };
+    let mut headers = Vec::new();
+    if has_key {
+        headers.push(("X-API-Key", api_key.trim()));
+    }
+    limited_get_headers(url, "wallhaven", class, has_key, &headers)
+}
+
 pub(crate) fn wallhaven_search(
     q: &str,
     user_query: &str,
@@ -101,21 +118,17 @@ pub(crate) fn wallhaven_search(
     if opts.hide_ai {
         url.push_str("&ai_art_filter=1");
     }
-    let mut req = listing_agent().get(&url);
-    if !api_key.trim().is_empty() {
-        req = req.set("X-API-Key", api_key.trim());
-    }
-    let parsed: WallhavenSearch = match req.call() {
+    let parsed: WallhavenSearch = match wallhaven_api_get(&url, api_key) {
         Ok(resp) => match resp.into_json() {
             Ok(p) => p,
             Err(e) => {
-                log::warn!("wallhaven json failed url={url}: {e}");
-                return Err(e).context(format!("wallhaven json {url}"));
+                log::warn!("wallhaven json failed: {e}");
+                return Err(e).context("wallhaven json");
             }
         },
         Err(e) => {
-            log::warn!("wallhaven search failed url={url}: {e}");
-            return Err(anyhow!("wallhaven search {url}: {e}"));
+            log::warn!("wallhaven search failed: {e:#}");
+            return Err(e);
         }
     };
     let last_page = parsed.meta.as_ref().and_then(|m| m.last_page);
@@ -306,4 +319,3 @@ pub(crate) struct WallhavenThumbs {
     pub(crate) small: Option<String>,
     pub(crate) large: Option<String>,
 }
-

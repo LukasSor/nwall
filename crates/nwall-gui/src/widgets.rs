@@ -1,4 +1,3 @@
-
 use adw::prelude::*;
 use gtk::{Align, Box as GtkBox, CheckButton, Label, Orientation, SpinButton};
 
@@ -8,7 +7,6 @@ pub(crate) fn section_label(text: &str) -> Label {
     l.add_css_class("title-4");
     l
 }
-
 
 pub(crate) fn filter_heading(text: &str) -> Label {
     let l = Label::new(Some(text));
@@ -34,8 +32,12 @@ pub(crate) fn filter_page_box() -> GtkBox {
     b
 }
 
-
-pub(crate) fn set_video_playback_rows_visible(fps: &GtkBox, mute: &GtkBox, volume: &GtkBox, video: bool) {
+pub(crate) fn set_video_playback_rows_visible(
+    fps: &GtkBox,
+    mute: &GtkBox,
+    volume: &GtkBox,
+    video: bool,
+) {
     fps.set_visible(video);
     mute.set_visible(video);
     volume.set_visible(video);
@@ -79,9 +81,7 @@ pub(crate) fn spin_with_suffix<'a>(spin: &'a SpinButton, suffix: &str) -> &'a Sp
         .upper()
         .abs()
         .max(spin.adjustment().lower().abs());
-    let chars = format!("{}{}", max_abs.round() as i64, suffix)
-        .len()
-        .max(2) as i32;
+    let chars = format!("{}{}", max_abs.round() as i64, suffix).len().max(2) as i32;
     spin.set_width_chars(chars);
     spin.set_max_width_chars(chars);
     spin.update();
@@ -106,4 +106,3 @@ pub(crate) fn preview_option_row(text: &str, widget: &impl IsA<gtk::Widget>) -> 
     row.set_spacing(8);
     row
 }
-

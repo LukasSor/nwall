@@ -1,4 +1,3 @@
-
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -9,8 +8,7 @@ use gtk::{
 };
 use nwall_catalog as catalog;
 use nwall_ipc::{
-    default_config_path, discover_filters, CatalogSource, Config,
-    DiscoverFiltersState,
+    default_config_path, discover_filters, CatalogSource, Config, DiscoverFiltersState,
 };
 
 use crate::consts::*;
@@ -111,7 +109,8 @@ impl DiscoverFilters {
     }
 
     pub(crate) fn show_for_kind(&self, kind: &str) {
-        self.stack.set_visible_child_name(discover_filter_page(kind));
+        self.stack
+            .set_visible_child_name(discover_filter_page(kind));
         self.sync_toplist_range();
         self.sync_pixabay_media_filters();
         let has = discover_kind_has_filters(kind);
@@ -166,8 +165,7 @@ impl DiscoverFilters {
 
         let saved = Config::load(&default_config_path())
             .map(|c| {
-                if c.discover_filters.github.repos.is_empty()
-                    && !c.discover_github_repos.is_empty()
+                if c.discover_filters.github.repos.is_empty() && !c.discover_github_repos.is_empty()
                 {
                     c.discover_github_repos
                 } else {
@@ -468,13 +466,7 @@ pub(crate) fn build_discover_filters() -> DiscoverFilters {
     sort.set_selected(0);
     let top_range = DropDown::new(
         Some(StringList::new(&[
-            "1 day",
-            "3 days",
-            "1 week",
-            "1 month",
-            "3 months",
-            "6 months",
-            "1 year",
+            "1 day", "3 days", "1 week", "1 month", "3 months", "6 months", "1 year",
         ])),
         Option::<&gtk::Expression>::None,
     );
@@ -488,12 +480,7 @@ pub(crate) fn build_discover_filters() -> DiscoverFilters {
     atleast.set_selected(0);
     let ratios = DropDown::new(
         Some(StringList::new(&[
-            "Any",
-            "16:9",
-            "16:10",
-            "21:9",
-            "32:9",
-            "9:16",
+            "Any", "16:9", "16:10", "21:9", "32:9", "9:16",
         ])),
         Option::<&gtk::Expression>::None,
     );
@@ -682,4 +669,3 @@ pub(crate) fn build_discover_filters() -> DiscoverFilters {
         github_repos_suppress,
     }
 }
-

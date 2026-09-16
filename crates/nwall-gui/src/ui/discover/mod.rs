@@ -1,17 +1,17 @@
-
 mod filters;
 pub(crate) mod thumbs;
 
+pub(crate) use crate::ui::preview::{bind_thumb, file_nonempty};
 pub(crate) use filters::build_discover_filters;
 pub(crate) use thumbs::{
-    bind_remote_image_thumb_prio, bind_remote_video_still,
-    bump_remote_thumb_gen, make_fixed_thumb, pack_tile, refresh_remote_tile_still,
+    bind_remote_image_thumb_prio, bind_remote_video_still, bump_remote_thumb_gen, make_fixed_thumb,
+    pack_tile, prefetch_discover_thumbs, refresh_remote_tile_still,
     refresh_remote_tile_still_if_missing, refresh_remote_tile_texture_if_missing,
     remote_still_path, remote_tile_needs_still,
 };
-pub(crate) use crate::ui::preview::{bind_thumb, file_nonempty};
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -23,29 +23,25 @@ use glib::object::SendWeakRef;
 use gtk::prelude::EditableExt;
 use gtk::{
     gdk, glib, Align, Box as GtkBox, Button, DropDown, Entry, EventControllerFocus,
-    EventControllerKey, FlowBox, FlowBoxChild, InputPurpose, Label, Orientation, Paned, ScrolledWindow, Spinner, Stack, StringList,
+    EventControllerKey, FlowBox, FlowBoxChild, InputPurpose, Label, Orientation, Paned,
+    ScrolledWindow, Spinner, Stack, StringList,
 };
 use nwall_catalog as catalog;
-use nwall_ipc::{
-    default_config_path, is_video, CatalogSource,
-    Config,
-};
+use nwall_ipc::{default_config_path, is_image, is_video, CatalogSource, Config};
 
-use crate::app::{
-    replace_string_list, visible_catalog_sources, watch_sources, SourceWatchers,
-};
+use crate::app::{replace_string_list, visible_catalog_sources, watch_sources, SourceWatchers};
 use crate::ipc_util::apply_wallpaper;
 use crate::ui::gallery::{compact_flow, gallery_dirs, kind_badge, refresh_gallery};
 use crate::ui::preview::{
-    arm_preview_loading, bind_preview_host_size, fill_sidebar_button, fit_preview_still, hide_preview_loading,
-    make_fixed_preview, make_preview_split, new_preview_sidebar,
+    arm_preview_loading, bind_preview_host_size, fill_sidebar_button, fit_preview_still,
+    hide_preview_loading, make_fixed_preview, make_preview_split, new_preview_sidebar,
     preview_caption_label, preview_section_label, preview_sidebar_head, preview_stats_scroll,
-    preview_title, reset_preview_aspect, set_preview_title, start_live_preview,
-    stop_live_preview, PreviewSession,
+    preview_title, reset_preview_aspect, set_preview_title, start_live_preview, stop_live_preview,
+    PreviewSession,
 };
 use crate::ui::stats::{
-    apply_archive_details_to_tile, apply_github_details_to_tile,
-    apply_wallhaven_details_to_tile, enrich_wallhaven_tiles, make_stats_pane, schedule_local_stats,
+    apply_archive_details_to_tile, apply_github_details_to_tile, apply_wallhaven_details_to_tile,
+    enrich_wallhaven_tiles, make_stats_pane, schedule_local_stats,
 };
 
 use self::filters::persist_discover_filters;
@@ -80,7 +76,13 @@ fn jump_discover_page(entry: &Entry, page: &AtomicU32, last_page: &AtomicU32, ru
     }
 }
 
-fn nudge_discover_page(entry: &Entry, page: &AtomicU32, last_page: &AtomicU32, run: &dyn Fn(), delta: i32) {
+fn nudge_discover_page(
+    entry: &Entry,
+    page: &AtomicU32,
+    last_page: &AtomicU32,
+    run: &dyn Fn(),
+    delta: i32,
+) {
     let max = discover_page_ceiling(last_page);
     let cur = page.load(Ordering::Relaxed);
     let next = (cur as i64 + delta as i64).clamp(1, max as i64) as u32;
@@ -149,24 +151,209 @@ fn begin_discover_loading(body: &Stack, spin: &Spinner, lbl: &Label, text: &str)
     body.set_visible_child_name("loading");
 }
 
+fn schedule_discover_prefetch(
+    src: CatalogSource,
+    opts: catalog::SearchOpts,
+    last_page: Option<u32>,
+    load_gen: Arc<AtomicU64>,
+    my: u64,
+) {
+    let Some(next) = catalog::prefetchable_next_page(&src.kind, &opts, last_page) else {
+        return;
+    };
+    let kind = src.kind.clone();
+    let has_key = catalog::source_uses_auth_budget(&src);
+    let delay = catalog::prefetch_delay_for(&kind, has_key);
+    let _ = std::thread::Builder::new()
+        .name("nwall-discover-prefetch".into())
+        .spawn(move || {
+            if load_gen.load(Ordering::Relaxed) != my {
+                return;
+            }
+            std::thread::sleep(delay);
+            if load_gen.load(Ordering::Relaxed) != my {
+                return;
+            }
+            if let Some(cached) = catalog::peek_cached_fetch(&src, &next) {
+                if !cached.items.is_empty() && load_gen.load(Ordering::Relaxed) == my {
+                    prefetch_discover_thumbs(&cached.items);
+                }
+                return;
+            }
+            if catalog::should_skip_prefetch(&kind) {
+                return;
+            }
+            let _ = catalog::wait_source_ready(&kind, Duration::from_secs(4));
+            if load_gen.load(Ordering::Relaxed) != my {
+                return;
+            }
+            let Ok(fetched) = catalog::fetch_source(&src, &next) else {
+                return;
+            };
+            if fetched.items.is_empty() || load_gen.load(Ordering::Relaxed) != my {
+                return;
+            }
+            prefetch_discover_thumbs(&fetched.items);
+        });
+}
+
+fn finish_discover_page(
+    result: Result<catalog::FetchResult, String>,
+    src: &CatalogSource,
+    opts: &catalog::SearchOpts,
+    api_key: &str,
+    my: u64,
+    load_gen: &Arc<AtomicU64>,
+    page: &AtomicU32,
+    last_page: &AtomicU32,
+    source_page: &Mutex<HashMap<String, u32>>,
+    flow: &FlowBox,
+    status: Option<&Label>,
+    body: Option<&Stack>,
+    err_lbl: Option<&Label>,
+    load_spin: Option<&Spinner>,
+    load_lbl: Option<&Label>,
+    go: Option<&Button>,
+    go_spin: Option<&Spinner>,
+    go_lbl: Option<&Label>,
+    pager: Option<&GtkBox>,
+    prev: Option<&Button>,
+    next: Option<&Button>,
+    page_entry: Option<&Entry>,
+    page_of: Option<&Label>,
+    preview_name: Option<&Label>,
+    pending: Arc<Mutex<Option<catalog::RemoteItem>>>,
+    stats_refs: &crate::ui::stats::StatsPaneRefs,
+) {
+    if let Some(sp) = load_spin {
+        sp.stop();
+    }
+    if let Some(b) = go {
+        b.set_sensitive(true);
+    }
+    if let Some(sp) = go_spin {
+        sp.stop();
+        sp.set_visible(false);
+    }
+    if let Some(l) = go_lbl {
+        l.set_text("Browse");
+    }
+    while let Some(c) = flow.first_child() {
+        flow.remove(&c);
+    }
+    let (n_items, pg, last) = match &result {
+        Ok(fetched) => (fetched.items.len(), fetched.page, fetched.last_page),
+        Err(_) => (0, page.load(Ordering::Relaxed), None),
+    };
+    page.store(pg, Ordering::Relaxed);
+    last_page.store(last.unwrap_or(0), Ordering::Relaxed);
+    source_page
+        .lock()
+        .unwrap()
+        .insert(catalog::source_session_id(src), pg);
+    if let (Some(p), Some(prev), Some(next), Some(entry), Some(of)) =
+        (pager, prev, next, page_entry, page_of)
+    {
+        update_discover_pager(p, prev, next, entry, of, &src.kind, pg, last, n_items);
+    }
+    match result {
+        Ok(fetched) if fetched.items.is_empty() => {
+            if let (Some(b), Some(sp), Some(l)) = (body, load_spin, load_lbl) {
+                show_discover_center_status(b, sp, l, "No results found");
+            }
+            if let Some(s) = status {
+                s.set_text("No results found");
+            }
+        }
+        Ok(fetched) => {
+            if let Some(s) = status {
+                s.set_text(&format!("{} items", fetched.items.len()));
+            }
+            let query = opts.query.clone();
+            let mut shown_opts = opts.clone();
+            shown_opts.page = fetched.page;
+            catalog::remember_shown_fetch(src, &shown_opts, &fetched);
+            for (i, mut it) in fetched.items.iter().cloned().enumerate() {
+                apply_discover_caption(&mut it, &query);
+                flow.insert(&make_remote_tile_at(&it, i), -1);
+            }
+            if let Some(name) = preview_name {
+                enrich_wallhaven_tiles(
+                    flow,
+                    api_key,
+                    Arc::clone(load_gen),
+                    my,
+                    pending,
+                    name,
+                    stats_refs,
+                );
+            }
+            if let Some(b) = body {
+                b.set_visible_child_name("grid");
+            }
+            schedule_discover_prefetch(
+                src.clone(),
+                shown_opts,
+                fetched.last_page,
+                Arc::clone(load_gen),
+                my,
+            );
+        }
+        Err(msg) => {
+            let (key_err, hint) = discover_fetch_status(&msg);
+            if key_err {
+                if let Some(l) = err_lbl {
+                    l.set_text(&hint);
+                }
+                if let Some(b) = body {
+                    b.set_visible_child_name("error");
+                }
+            } else if let (Some(b), Some(sp), Some(l)) = (body, load_spin, load_lbl) {
+                show_discover_center_status(b, sp, l, &hint);
+            }
+            if let Some(s) = status {
+                s.set_text(&hint);
+            }
+        }
+    }
+}
+
 fn discover_fetch_status(err: &str) -> (bool, String) {
     let lower = err.to_ascii_lowercase();
     let key_err = lower.contains("api key")
         || lower.contains("needs an api key")
         || (lower.contains("add a") && lower.contains("pat") && lower.contains("settings"));
-    if lower.contains("rate limit") || lower.contains("rate-limited") {
-        let msg = if lower.contains("settings") || lower.contains("api key") || lower.contains("pat")
-        {
-            if lower.contains("github") {
-                "Rate limit reached — add a GitHub PAT in Settings, or try again later".into()
+    if catalog::err_text_is_timeout(err) {
+        return (false, "Request timed out, try again".into());
+    }
+    if catalog::err_text_is_rate_limit(err) {
+        if lower.contains("wallhaven") {
+            return (false, catalog::WALLHAVEN_RATE_LIMIT_MSG.into());
+        }
+        let msg =
+            if lower.contains("settings") || lower.contains("api key") || lower.contains("pat") {
+                if lower.contains("github") {
+                    "GitHub rate limit — add a PAT in Settings, or try again later".into()
+                } else if lower.contains("nasa") {
+                    "NASA APOD rate limit — add an API key in Settings, or try again later".into()
+                } else {
+                    "Rate limit reached — add an API key in Settings, or try again later".into()
+                }
+            } else if lower.contains("github") {
+                catalog::rate_limit_message("github")
             } else if lower.contains("nasa") {
-                "Rate limit reached — add an API key in Settings, or try again later".into()
+                catalog::rate_limit_message("nasa")
+            } else if lower.contains("pixabay") {
+                catalog::rate_limit_message("pixabay")
+            } else if lower.contains("coverr") {
+                catalog::rate_limit_message("coverr")
+            } else if lower.contains("archive") {
+                catalog::rate_limit_message("archive")
+            } else if lower.contains("bing") {
+                catalog::rate_limit_message("bing")
             } else {
-                "Rate limit reached — add an API key in Settings, or try again later".into()
-            }
-        } else {
-            "Rate limit reached — try again later".into()
-        };
+                "Rate limit reached — try again later".into()
+            };
         return (false, msg);
     }
     if lower.contains("no results")
@@ -178,6 +365,9 @@ fn discover_fetch_status(err: &str) -> (bool, String) {
     }
     if key_err {
         return (true, err.to_string());
+    }
+    if lower.contains("http://") || lower.contains("https://") {
+        return (false, "Request failed, try again".into());
     }
     (false, format!("Failed: {err}"))
 }
@@ -399,6 +589,7 @@ pub(crate) fn build_discover(
     pager.set_visible(catalog::supports_paging(&initial_kind));
 
     let load_gen = Arc::new(AtomicU64::new(0));
+    let source_page: Arc<Mutex<HashMap<String, u32>>> = Arc::new(Mutex::new(HashMap::new()));
     let pending: Arc<Mutex<Option<catalog::RemoteItem>>> = Arc::new(Mutex::new(None));
     let run = Rc::new({
         let flow = flow.clone();
@@ -421,6 +612,7 @@ pub(crate) fn build_discover(
         let page_of = page_of.clone();
         let page = Arc::clone(&page);
         let last_page = Arc::clone(&last_page);
+        let source_page = Arc::clone(&source_page);
         let load_gen = Arc::clone(&load_gen);
         let live = Arc::clone(&live);
         let pending = Arc::clone(&pending);
@@ -442,11 +634,53 @@ pub(crate) fn build_discover(
                 status.set_text("No source selected — add one in Settings");
                 return;
             };
-            let opts = filters.collect(search.text().to_string(), page.load(Ordering::Relaxed), &src.kind);
+            let opts = filters.collect(
+                search.text().to_string(),
+                page.load(Ordering::Relaxed),
+                &src.kind,
+            );
             let my = load_gen.fetch_add(1, Ordering::Relaxed) + 1;
             let _ = bump_remote_thumb_gen();
+            catalog::cancel_wallhaven_detail_warm();
             let api_key = catalog::source_api_key(&src);
-            begin_discover_loading(&body, &load_spin, &load_lbl, &format!("Loading {}…", src.name));
+            let stats_refs = preview_stats.refs();
+            if let Some(cached) = catalog::peek_cached_fetch(&src, &opts) {
+                finish_discover_page(
+                    Ok(cached),
+                    &src,
+                    &opts,
+                    &api_key,
+                    my,
+                    &load_gen,
+                    &page,
+                    &last_page,
+                    &source_page,
+                    &flow,
+                    Some(&status),
+                    Some(&body),
+                    Some(&err_lbl),
+                    Some(&load_spin),
+                    Some(&load_lbl),
+                    Some(&go),
+                    Some(&go_spin),
+                    Some(&go_lbl),
+                    Some(&pager),
+                    Some(&prev_btn),
+                    Some(&next_btn),
+                    Some(&page_entry),
+                    Some(&page_of),
+                    Some(&preview_name),
+                    Arc::clone(&pending),
+                    &stats_refs,
+                );
+                return;
+            }
+            begin_discover_loading(
+                &body,
+                &load_spin,
+                &load_lbl,
+                &format!("Loading {}…", src.name),
+            );
             go.set_sensitive(false);
             prev_btn.set_sensitive(false);
             next_btn.set_sensitive(false);
@@ -471,114 +705,46 @@ pub(crate) fn build_discover(
             let gen = Arc::clone(&load_gen);
             let page_a = Arc::clone(&page);
             let last_a = Arc::clone(&last_page);
-            let kind = src.kind.clone();
+            let source_page_a = Arc::clone(&source_page);
             let pending_a = Arc::clone(&pending);
             let name_w = SendWeakRef::from(preview_name.downgrade());
-            let stats_refs = preview_stats.refs();
             std::thread::spawn(move || {
-                let result = catalog::fetch_source(&src, &opts);
-                let query = opts.query.clone();
+                let result = catalog::fetch_source(&src, &opts).map_err(|e| format!("{e:#}"));
                 glib::idle_add_once(move || {
                     if gen.load(Ordering::Relaxed) != my {
                         return;
                     }
-                    if let Some(sp) = load_spin_w.upgrade() {
-                        sp.stop();
-                    }
-                    if let Some(b) = go_w.upgrade() {
-                        b.set_sensitive(true);
-                    }
-                    if let Some(sp) = go_spin_w.upgrade() {
-                        sp.stop();
-                        sp.set_visible(false);
-                    }
-                    if let Some(l) = go_lbl_w.upgrade() {
-                        l.set_text("Browse");
-                    }
                     let Some(flow) = flow_w.upgrade() else {
                         return;
                     };
-                    while let Some(c) = flow.first_child() {
-                        flow.remove(&c);
-                    }
-                    let (n_items, pg, last) = match &result {
-                        Ok(fetched) => (fetched.items.len(), fetched.page, fetched.last_page),
-                        Err(_) => (0, page_a.load(Ordering::Relaxed), None),
-                    };
-                    page_a.store(pg, Ordering::Relaxed);
-                    last_a.store(last.unwrap_or(0), Ordering::Relaxed);
-                    if let (Some(p), Some(prev), Some(next), Some(entry), Some(of)) = (
-                        pager_w.upgrade(),
-                        prev_w.upgrade(),
-                        next_w.upgrade(),
-                        page_entry_w.upgrade(),
-                        page_of_w.upgrade(),
-                    ) {
-                        update_discover_pager(&p, &prev, &next, &entry, &of, &kind, pg, last, n_items);
-                    }
-                    match result {
-                        Ok(fetched) if fetched.items.is_empty() => {
-                            if let (Some(b), Some(sp), Some(l)) = (
-                                body_w.upgrade(),
-                                load_spin_w.upgrade(),
-                                load_lbl_w.upgrade(),
-                            ) {
-                                show_discover_center_status(
-                                    &b,
-                                    &sp,
-                                    &l,
-                                    "No results found",
-                                );
-                            }
-                            if let Some(s) = status_w.upgrade() {
-                                s.set_text("No results found");
-                            }
-                        }
-                        Ok(fetched) => {
-                            if let Some(s) = status_w.upgrade() {
-                                s.set_text(&format!("{} items", fetched.items.len()));
-                            }
-                            for (i, mut it) in fetched.items.into_iter().enumerate() {
-                                apply_discover_caption(&mut it, &query);
-                                flow.insert(&make_remote_tile_at(&it, i), -1);
-                            }
-                            if let Some(name) = name_w.upgrade() {
-                                enrich_wallhaven_tiles(
-                                    &flow,
-                                    &api_key,
-                                    Arc::clone(&gen),
-                                    my,
-                                    pending_a,
-                                    &name,
-                                    &stats_refs,
-                                );
-                            }
-                            if let Some(b) = body_w.upgrade() {
-                                b.set_visible_child_name("grid");
-                            }
-                        }
-                        Err(e) => {
-                            let msg = format!("{e:#}");
-                            let (key_err, hint) = discover_fetch_status(&msg);
-                            if key_err {
-                                if let Some(l) = err_w.upgrade() {
-                                    l.set_text(&hint);
-                                }
-                                if let Some(b) = body_w.upgrade() {
-                                    b.set_visible_child_name("error");
-                                }
-                            } else if let (Some(b), Some(sp), Some(l)) = (
-                                body_w.upgrade(),
-                                load_spin_w.upgrade(),
-                                load_lbl_w.upgrade(),
-                            ) {
-                                show_discover_center_status(&b, &sp, &l, &hint);
-                            }
-                            if let Some(s) = status_w.upgrade() {
-                                s.set_text(&hint);
-                            }
-                        }
-                    }
+                    finish_discover_page(
+                        result,
+                        &src,
+                        &opts,
+                        &api_key,
+                        my,
+                        &gen,
+                        &page_a,
+                        &last_a,
+                        &source_page_a,
+                        &flow,
+                        status_w.upgrade().as_ref(),
+                        body_w.upgrade().as_ref(),
+                        err_w.upgrade().as_ref(),
+                        load_spin_w.upgrade().as_ref(),
+                        load_lbl_w.upgrade().as_ref(),
+                        go_w.upgrade().as_ref(),
+                        go_spin_w.upgrade().as_ref(),
+                        go_lbl_w.upgrade().as_ref(),
+                        pager_w.upgrade().as_ref(),
+                        prev_w.upgrade().as_ref(),
+                        next_w.upgrade().as_ref(),
+                        page_entry_w.upgrade().as_ref(),
+                        page_of_w.upgrade().as_ref(),
+                        name_w.upgrade().as_ref(),
+                        pending_a,
+                        &stats_refs,
+                    );
                 });
             });
         }
@@ -588,8 +754,17 @@ pub(crate) fn build_discover(
     search.connect_activate({
         let run = Rc::clone(&run);
         let page = Arc::clone(&page);
+        let source_page = Arc::clone(&source_page);
+        let listed = Rc::clone(&listed);
+        let source_dd = source_dd.clone();
         move |_| {
             page.store(1, Ordering::Relaxed);
+            if let Some(src) = listed.borrow().get(source_dd.selected() as usize) {
+                source_page
+                    .lock()
+                    .unwrap()
+                    .insert(catalog::source_session_id(src), 1);
+            }
             run();
         }
     });
@@ -597,9 +772,18 @@ pub(crate) fn build_discover(
         let run = Rc::clone(&run);
         let page = Arc::clone(&page);
         let filters = filters.clone();
+        let source_page = Arc::clone(&source_page);
+        let listed = Rc::clone(&listed);
+        let source_dd = source_dd.clone();
         Rc::new(move || {
             persist_discover_filters(&filters);
             page.store(1, Ordering::Relaxed);
+            if let Some(src) = listed.borrow().get(source_dd.selected() as usize) {
+                source_page
+                    .lock()
+                    .unwrap()
+                    .insert(catalog::source_session_id(src), 1);
+            }
             run();
         }) as Rc<dyn Fn()>
     };
@@ -618,16 +802,14 @@ pub(crate) fn build_discover(
         let page_of = page_of.clone();
         let page = Arc::clone(&page);
         let last_page = Arc::clone(&last_page);
+        let source_page = Arc::clone(&source_page);
         let reload_repos = Rc::clone(&reload_filters);
         move |dd| {
             if suppress.get() {
                 return;
             }
             let src = listed.borrow().get(dd.selected() as usize).cloned();
-            let kind = src
-                .as_ref()
-                .map(|s| s.kind.clone())
-                .unwrap_or_default();
+            let kind = src.as_ref().map(|s| s.kind.clone()).unwrap_or_default();
             filters.sync_nsfw_visibility(&listed.borrow());
             filters.show_for_kind(&kind);
             if let Some(ref s) = src {
@@ -635,9 +817,30 @@ pub(crate) fn build_discover(
             } else {
                 filters.github_repos_box.set_visible(false);
             }
-            page.store(1, Ordering::Relaxed);
+            let restore = src
+                .as_ref()
+                .and_then(|s| {
+                    source_page
+                        .lock()
+                        .unwrap()
+                        .get(&catalog::source_session_id(s))
+                        .copied()
+                })
+                .unwrap_or(1)
+                .max(1);
+            page.store(restore, Ordering::Relaxed);
             last_page.store(0, Ordering::Relaxed);
-            update_discover_pager(&pager, &prev_btn, &next_btn, &page_entry, &page_of, &kind, 1, None, 1);
+            update_discover_pager(
+                &pager,
+                &prev_btn,
+                &next_btn,
+                &page_entry,
+                &page_of,
+                &kind,
+                restore,
+                None,
+                1,
+            );
             run();
         }
     });
@@ -889,9 +1092,7 @@ pub(crate) fn build_discover(
                     if gen.load(Ordering::Relaxed) != my_stats {
                         return;
                     }
-                    apply_github_details_to_tile(
-                        &child_w, &details, &pending, &name_w, &stats_w,
-                    );
+                    apply_github_details_to_tile(&child_w, &details, &pending, &name_w, &stats_w);
                 });
             });
         }
@@ -1063,8 +1264,8 @@ pub(crate) fn build_discover(
             }
         } else {
             let cfg = Config::load(&default_config_path()).unwrap_or_default();
-            let is_wallhaven = item.url.contains("wallhaven")
-                || item.credit.as_deref() == Some("Wallhaven");
+            let is_wallhaven =
+                item.url.contains("wallhaven") || item.credit.as_deref() == Some("Wallhaven");
             let want_full = !cfg.fast_image_preview
                 || (is_wallhaven && cfg.discover_filters.wallhaven.load_full_preview);
 
@@ -1203,12 +1404,8 @@ pub(crate) fn build_discover(
                 let mut item = item;
                 catalog::enrich_item_for_save(&mut item, &api_key);
                 let hint = item.library_file_stem();
-                let result = catalog::download_to_library(
-                    &item.url,
-                    &library,
-                    &hint,
-                    item.id.as_deref(),
-                );
+                let result =
+                    catalog::download_to_library(&item.url, &library, &hint, item.id.as_deref());
                 glib::idle_add_once(move || {
                     let restore = || {
                         if let Some(b) = dl_w.upgrade() {
@@ -1263,23 +1460,32 @@ pub(crate) fn build_discover(
                             }
                             if apply_after {
                                 stop_live_preview(&live_apply);
-                                match apply_wallpaper(&path, &outs) {
-                                    Ok(()) => {
-                                        if let Some(s) = status_w.upgrade() {
-                                            s.set_text(&format!(
-                                                "Applied to {}: {}",
-                                                outs.join(", "),
-                                                path.display()
-                                            ));
-                                        }
-                                        on_applied();
+                                if !is_image(&path) && !is_video(&path) {
+                                    if let Some(s) = status_w.upgrade() {
+                                        s.set_text(&format!(
+                                            "Saved {}, apply skipped: unsupported file type",
+                                            path.display()
+                                        ));
                                     }
-                                    Err(e) => {
-                                        if let Some(s) = status_w.upgrade() {
-                                            s.set_text(&format!(
-                                                "Saved {}, apply failed: {e:#}",
-                                                path.display()
-                                            ));
+                                } else {
+                                    match apply_wallpaper(&path, &outs) {
+                                        Ok(()) => {
+                                            if let Some(s) = status_w.upgrade() {
+                                                s.set_text(&format!(
+                                                    "Applied to {}: {}",
+                                                    outs.join(", "),
+                                                    path.display()
+                                                ));
+                                            }
+                                            on_applied();
+                                        }
+                                        Err(e) => {
+                                            if let Some(s) = status_w.upgrade() {
+                                                s.set_text(&format!(
+                                                    "Saved {}, apply failed: {e:#}",
+                                                    path.display()
+                                                ));
+                                            }
                                         }
                                     }
                                 }
@@ -1317,7 +1523,9 @@ pub(crate) fn apply_discover_caption(item: &mut catalog::RemoteItem, query: &str
     let n = item.name.trim();
     let leftover = n.is_empty()
         || n.contains('×')
-        || (n.starts_with('#') && n.len() <= 9 && n[1..].chars().all(|c| c.is_ascii_alphanumeric()))
+        || (n.starts_with('#')
+            && n.len() <= 9
+            && n[1..].chars().all(|c| c.is_ascii_alphanumeric()))
         || matches!(
             n.to_ascii_lowercase().as_str(),
             "general" | "anime" | "people"
@@ -1359,4 +1567,3 @@ pub(crate) fn remote_child_item(child: &FlowBoxChild) -> Option<catalog::RemoteI
             .map(|p| (*p.as_ref()).clone())
     }
 }
-

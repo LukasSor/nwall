@@ -1,13 +1,14 @@
 use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex, OnceLock};
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use nwall_ipc::{cache_dir, hash_url, CatalogSource};
 use super::types::UA;
 use super::*;
+use nwall_ipc::{cache_dir, hash_url, CatalogSource};
 
 /// Discover / slideshow search parameters. Defaults stay SFW.
 #[derive(Clone, Debug)]
@@ -130,16 +131,53 @@ impl FetchResult {
 }
 
 pub fn supports_paging(kind: &str) -> bool {
-    matches!(kind, "wallhaven" | "pixabay" | "coverr" | "archive" | "github")
+    matches!(
+        kind,
+        "wallhaven" | "pixabay" | "coverr" | "archive" | "github"
+    )
+}
+
+/// Next listing page for Discover prefetch, or `None` when paging/random/end.
+pub fn prefetchable_next_page(
+    kind: &str,
+    opts: &SearchOpts,
+    last_page: Option<u32>,
+) -> Option<SearchOpts> {
+    if !supports_paging(kind) || opts.sorting.eq_ignore_ascii_case("random") {
+        return None;
+    }
+    let page = opts.page();
+    if last_page.is_some_and(|last| page >= last) {
+        return None;
+    }
+    let mut next = opts.clone();
+    next.page = page.saturating_add(1);
+    Some(next)
+}
+
+/// Thumb URLs Discover already loads for a listing (no full wallpapers / bare videos).
+pub fn listing_thumb_urls(items: &[RemoteItem]) -> Vec<String> {
+    items
+        .iter()
+        .filter_map(|it| {
+            if let Some(th) = it.thumb.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                return Some(th.to_string());
+            }
+            if it.video || it.url.trim().is_empty() {
+                None
+            } else {
+                Some(it.url.clone())
+            }
+        })
+        .collect()
 }
 
 pub(crate) const GITHUB_PAGE_SIZE: u32 = 36;
 
 pub(crate) const DOWNLOAD_HTTP_TIMEOUT_SECS: u64 = 60;
-pub(crate) const LISTING_HTTP_TIMEOUT_SECS: u64 = 12;
-pub(crate) const GITHUB_HTTP_TIMEOUT_SECS: u64 = 45;
-pub(crate) const GITHUB_LIST_CONCURRENCY: usize = 4;
-pub const REMOTE_THUMB_HTTP_MAX: usize = 8;
+pub(crate) const LISTING_HTTP_TIMEOUT_SECS: u64 = 15;
+pub(crate) const GITHUB_HTTP_TIMEOUT_SECS: u64 = 15;
+pub const REMOTE_THUMB_HTTP_MAX: usize = 4;
 
 pub(crate) fn agent() -> ureq::Agent {
     // Shared agent so Discover thumbs + downloads reuse TLS / keep-alive.
@@ -185,12 +223,178 @@ pub(crate) fn github_agent() -> ureq::Agent {
         .clone()
 }
 
+/// Path suffix, then query (`/th?id=OHR.Foo_UHD.jpg`). Bing `OHR.` ids are JPEG.
 pub(crate) fn ext_from_url(url: &str) -> &str {
-    let path = url.split('?').next().unwrap_or(url);
-    Path::new(path)
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    if let Some(ext) = Path::new(path).extension().and_then(|e| e.to_str()) {
+        if looks_like_url_ext(ext) {
+            return ext;
+        }
+    }
+    if let Some(q) = url
+        .split_once('?')
+        .map(|(_, rest)| rest.split('#').next().unwrap_or(rest))
+    {
+        if let Some(ext) = media_ext_in_haystack(q) {
+            return ext;
+        }
+        if bing_ohr_query_is_jpeg(q) {
+            return "jpg";
+        }
+    }
+    if coverr_storage_video_is_mp4(url) {
+        return "mp4";
+    }
+    "bin"
+}
+
+/// HPImageArchive `id=OHR.Place_EN-US…` has no `.jpg` in the path; the file is still JPEG.
+fn bing_ohr_query_is_jpeg(query: &str) -> bool {
+    query.split('&').any(|part| {
+        let (key, val) = part.split_once('=').unwrap_or((part, ""));
+        key.eq_ignore_ascii_case("id") && val.len() >= 4 && val[..4].eq_ignore_ascii_case("OHR.")
+    })
+}
+
+/// Coverr signed MP4s are `/videos/{id}` with no `.mp4` (optional `/download` or `/preview`).
+fn coverr_storage_video_is_mp4(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    let Some(idx) = lower.find("storage.coverr.co/") else {
+        return false;
+    };
+    let path = lower[idx + "storage.coverr.co/".len()..]
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("");
+    path.starts_with("videos/")
+}
+
+fn looks_like_url_ext(ext: &str) -> bool {
+    let n = ext.len();
+    (2..=8).contains(&n) && ext.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+fn media_ext_in_haystack(s: &str) -> Option<&'static str> {
+    let lower = s.to_ascii_lowercase();
+    const EXTS: &[(&str, &str)] = &[
+        (".jpeg", "jpeg"),
+        (".jpg", "jpg"),
+        (".png", "png"),
+        (".webp", "webp"),
+        (".gif", "gif"),
+        (".bmp", "bmp"),
+        (".webm", "webm"),
+        (".mkv", "mkv"),
+        (".avi", "avi"),
+        (".mov", "mov"),
+        (".m4v", "m4v"),
+        (".mp4", "mp4"),
+    ];
+    for (needle, ext) in EXTS {
+        let mut rest = lower.as_str();
+        while let Some(i) = rest.find(needle) {
+            let after = i + needle.len();
+            let ok = rest
+                .as_bytes()
+                .get(after)
+                .map(|b| !b.is_ascii_alphanumeric())
+                .unwrap_or(true);
+            if ok {
+                return Some(*ext);
+            }
+            rest = &rest[i + 1..];
+        }
+    }
+    None
+}
+
+pub(crate) fn ext_from_content_type(ct: &str) -> Option<&'static str> {
+    let mime = ct
+        .split(';')
+        .next()
+        .unwrap_or(ct)
+        .trim()
+        .to_ascii_lowercase();
+    match mime.as_str() {
+        "image/jpeg" | "image/jpg" | "image/pjpeg" => Some("jpg"),
+        "image/png" | "image/x-png" => Some("png"),
+        "image/webp" => Some("webp"),
+        "image/gif" => Some("gif"),
+        "image/bmp" | "image/x-ms-bmp" => Some("bmp"),
+        "video/mp4" | "video/mpeg4" => Some("mp4"),
+        "video/webm" => Some("webm"),
+        "video/quicktime" => Some("mov"),
+        "video/x-matroska" => Some("mkv"),
+        _ => None,
+    }
+}
+
+pub(crate) fn ext_from_magic(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
+        return Some("jpg");
+    }
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        return Some("png");
+    }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP" {
+        return Some("webp");
+    }
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        return Some("gif");
+    }
+    if bytes.starts_with(b"BM") {
+        return Some("bmp");
+    }
+    if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        let brand = &bytes[8..12];
+        if brand == b"qt  " {
+            return Some("mov");
+        }
+        if matches!(
+            brand,
+            b"heic" | b"heif" | b"mif1" | b"msf1" | b"avif" | b"avis"
+        ) {
+            return None;
+        }
+        return Some("mp4");
+    }
+    None
+}
+
+pub(crate) fn is_placeholder_ext(path: &Path) -> bool {
+    match path
         .extension()
         .and_then(|e| e.to_str())
-        .unwrap_or("bin")
+        .map(|e| e.to_ascii_lowercase())
+    {
+        Some(ext) if ext == "bin" || ext.is_empty() => true,
+        None => true,
+        Some(_) => false,
+    }
+}
+
+fn sniff_path_ext(path: &Path) -> Option<&'static str> {
+    let mut buf = [0u8; 16];
+    let mut f = File::open(path).ok()?;
+    let n = f.read(&mut buf).ok()?;
+    ext_from_magic(&buf[..n])
+}
+
+fn file_nonempty(path: &Path) -> bool {
+    path.exists() && path.metadata().map(|m| m.len() > 0).unwrap_or(false)
+}
+
+fn sibling_known_media(path: &Path) -> Option<PathBuf> {
+    const EXTS: &[&str] = &[
+        "jpg", "jpeg", "png", "webp", "gif", "bmp", "mp4", "webm", "mkv", "avi", "mov", "m4v",
+    ];
+    for ext in EXTS {
+        let p = path.with_extension(ext);
+        if file_nonempty(&p) {
+            return Some(p);
+        }
+    }
+    None
 }
 
 pub(crate) fn cache_ext(url: &str, hint: &str) -> String {
@@ -210,7 +414,16 @@ pub fn cached_path(url: &str, hint: &str) -> PathBuf {
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .take(40)
         .collect();
-    cache_dir().join(format!("{}-{stem}.{ext}", hash_url(url)))
+    let dest = cache_dir().join(format!("{}-{stem}.{ext}", hash_url(url)));
+    if dest.exists() {
+        return dest;
+    }
+    if ext.eq_ignore_ascii_case("bin") {
+        if let Some(found) = sibling_known_media(&dest) {
+            return found;
+        }
+    }
+    dest
 }
 
 /// Ceiling for `~/.cache/nwall/remote` (Discover thumbs and downloads).
@@ -336,20 +549,28 @@ pub fn github_unique_repos(src: &CatalogSource) -> Vec<String> {
 }
 
 pub fn download(url: &str, hint: &str) -> Result<PathBuf> {
+    download_class(url, hint, RequestClass::Media)
+}
+
+fn download_class(url: &str, hint: &str, class: RequestClass) -> Result<PathBuf> {
     let url = resolve_download_url(url)?;
     let dest = cached_path(&url, hint);
-    if dest.exists() && dest.metadata().map(|m| m.len() > 0).unwrap_or(false) {
-        return Ok(dest);
+    if file_nonempty(&dest) {
+        return Ok(upgrade_placeholder_path(dest));
     }
-    download_to_dest(&url, &dest)
+    download_to_dest_class(&url, &dest, class)
 }
 
 /// Force a fresh GET into the cache path.
 pub fn redownload(url: &str, hint: &str) -> Result<PathBuf> {
+    redownload_class(url, hint, RequestClass::Media)
+}
+
+fn redownload_class(url: &str, hint: &str, class: RequestClass) -> Result<PathBuf> {
     let url = resolve_download_url(url)?;
     let dest = cached_path(&url, hint);
     let _ = std::fs::remove_file(&dest);
-    download_to_dest(&url, &dest)
+    download_to_dest_class(&url, &dest, class)
 }
 
 pub(crate) fn download_part_path(dest: &Path) -> PathBuf {
@@ -364,22 +585,30 @@ pub(crate) fn download_part_path(dest: &Path) -> PathBuf {
     ))
 }
 
-pub(crate) fn download_to_dest(url: &str, dest: &Path) -> Result<PathBuf> {
+pub(crate) fn download_to_dest_class(
+    url: &str,
+    dest: &Path,
+    class: RequestClass,
+) -> Result<PathBuf> {
     let tmp = download_part_path(dest);
     let _ = std::fs::remove_file(&tmp);
-    let resp = match agent().get(url).call() {
+    let kind = kind_from_url(url);
+    let has_key = known_auth(kind);
+    let resp = match limited_get(url, kind, class, has_key) {
         Ok(r) => r,
         Err(e) => {
-            log::warn!("download failed {url}: {e}");
-            return Err(anyhow!("GET {url}: {e}"));
+            log::warn!("download failed {url}: {e:#}");
+            return Err(e);
         }
     };
-    if let Some(ct) = resp.header("Content-Type") {
+    let ct_header = resp.header("Content-Type").map(|s| s.to_string());
+    if let Some(ct) = ct_header.as_deref() {
         let ct = ct.to_ascii_lowercase();
         if ct.contains("text/html") || ct.contains("application/json") {
             return Err(anyhow!("GET {url}: got {ct} instead of media"));
         }
     }
+    let ct_ext = ct_header.as_deref().and_then(ext_from_content_type);
     let expected = resp
         .header("Content-Length")
         .and_then(|s| s.parse::<u64>().ok())
@@ -402,40 +631,83 @@ pub(crate) fn download_to_dest(url: &str, dest: &Path) -> Result<PathBuf> {
     if let Some(exp) = expected {
         if written != exp {
             let _ = std::fs::remove_file(&tmp);
-            return Err(anyhow!(
-                "GET {url}: truncated ({written} of {exp} bytes)"
-            ));
+            return Err(anyhow!("GET {url}: truncated ({written} of {exp} bytes)"));
         }
     }
-    if let Err(e) = std::fs::rename(&tmp, dest) {
-        match std::fs::copy(&tmp, dest) {
+    let mut dest = dest.to_path_buf();
+    if is_placeholder_ext(&dest) {
+        let from_url = ext_from_url(url);
+        let guessed = if !from_url.eq_ignore_ascii_case("bin") {
+            Some(from_url.to_ascii_lowercase())
+        } else {
+            None
+        }
+        .or_else(|| ct_ext.map(|s| s.to_string()))
+        .or_else(|| sniff_path_ext(&tmp).map(|s| s.to_string()));
+        if let Some(ext) = guessed {
+            dest.set_extension(ext);
+        }
+    }
+    if let Err(e) = std::fs::rename(&tmp, &dest) {
+        match std::fs::copy(&tmp, &dest) {
             Ok(_) => {
                 let _ = std::fs::remove_file(&tmp);
             }
             Err(e2) => {
                 let _ = std::fs::remove_file(&tmp);
                 return Err(e2).with_context(|| {
-                    format!("rename/copy {} -> {} (rename: {e})", tmp.display(), dest.display())
+                    format!(
+                        "rename/copy {} -> {} (rename: {e})",
+                        tmp.display(),
+                        dest.display()
+                    )
                 });
             }
         }
     }
-    Ok(dest.to_path_buf())
+    Ok(dest)
+}
+
+fn upgrade_placeholder_path(path: PathBuf) -> PathBuf {
+    if !is_placeholder_ext(&path) || !file_nonempty(&path) {
+        return path;
+    }
+    let Some(ext) = sniff_path_ext(&path) else {
+        return path;
+    };
+    let upgraded = path.with_extension(ext);
+    if upgraded == path {
+        return path;
+    }
+    if file_nonempty(&upgraded) {
+        let _ = std::fs::remove_file(&path);
+        return upgraded;
+    }
+    match std::fs::rename(&path, &upgraded) {
+        Ok(()) => upgraded,
+        Err(_) => match std::fs::copy(&path, &upgraded) {
+            Ok(_) => {
+                let _ = std::fs::remove_file(&path);
+                upgraded
+            }
+            Err(_) => path,
+        },
+    }
 }
 
 pub fn download_thumb(url: &str) -> Result<PathBuf> {
     let dest = cached_path(url, "thumb");
-    if dest.exists() && dest.metadata().map(|m| m.len() > 0).unwrap_or(false) {
-        return Ok(dest);
+    if file_nonempty(&dest) {
+        return Ok(upgrade_placeholder_path(dest));
     }
     let _slot = RemoteThumbHttpSlot::acquire();
-    download(url, "thumb")
+    download_class(url, "thumb", RequestClass::Thumb)
 }
 
 /// Like `download_thumb`, but always fetches again.
 pub fn redownload_thumb(url: &str) -> Result<PathBuf> {
     let _slot = RemoteThumbHttpSlot::acquire();
-    redownload(url, "thumb")
+    redownload_class(url, "thumb", RequestClass::Thumb)
 }
 
 pub(crate) fn remote_thumb_http_slots() -> &'static (Mutex<usize>, Condvar) {
@@ -480,33 +752,47 @@ pub fn download_to_library(
 ) -> Result<PathBuf> {
     let url = resolve_download_url(url)?;
     std::fs::create_dir_all(dir)?;
-    let ext = ext_from_url(&url);
-    let hint_stem = Path::new(hint)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(hint);
-    let mut stem = sanitize_file_stem(hint_stem);
+    let mut stem = stem_from_download_hint(hint);
     if stem.is_empty() {
         stem = unique
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map(sanitize_file_stem)
+            .map(stem_from_download_hint)
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| hash_url(&url));
     }
-    let dest = pick_library_dest(dir, &stem, ext, unique);
-    if dest.exists() && dest.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+    let guess = ext_from_url(&url);
+    let dest = pick_library_dest(dir, &stem, guess, unique);
+    if file_nonempty(&dest) && !is_placeholder_ext(&dest) {
         return Ok(dest);
     }
     let cached = download(&url, hint)?;
+    let sniffed = sniff_path_ext(&cached);
+    let ext = cached
+        .extension()
+        .and_then(|e| e.to_str())
+        .filter(|e| !e.eq_ignore_ascii_case("bin") && !e.is_empty())
+        .or(sniffed)
+        .unwrap_or(guess);
+    let dest = pick_library_dest(dir, &stem, ext, unique);
+    if file_nonempty(&dest) && !is_placeholder_ext(&dest) {
+        return Ok(dest);
+    }
     if cached != dest {
-        std::fs::copy(&cached, &dest)
-            .with_context(|| format!("copy to {}", dest.display()))?;
+        std::fs::copy(&cached, &dest).with_context(|| format!("copy to {}", dest.display()))?;
+    }
+    if is_placeholder_ext(&dest) {
+        return Ok(upgrade_placeholder_path(dest));
     }
     Ok(dest)
 }
 
-pub(crate) fn pick_library_dest(dir: &Path, stem: &str, ext: &str, unique: Option<&str>) -> PathBuf {
+pub(crate) fn pick_library_dest(
+    dir: &Path,
+    stem: &str,
+    ext: &str,
+    unique: Option<&str>,
+) -> PathBuf {
     let primary = dir.join(format!("{stem}.{ext}"));
     if !primary.exists() {
         return primary;
@@ -525,15 +811,22 @@ pub(crate) fn pick_library_dest(dir: &Path, stem: &str, ext: &str, unique: Optio
     if extra.is_empty() || extra == stem {
         return primary;
     }
+    // `OHR` + `OHR-Kochia…` must not become `OHR-OHR-Kochia…`.
+    if extra.starts_with(stem)
+        && extra
+            .get(stem.len()..)
+            .is_some_and(|rest| rest.starts_with('-'))
+    {
+        return dir.join(format!("{extra}.{ext}"));
+    }
     dir.join(format!("{stem}-{extra}.{ext}"))
 }
 
 /// Expand Archive.org item URLs (`…/download/{id}`) to a concrete file URL.
 pub(crate) fn resolve_download_url(url: &str) -> Result<String> {
     if let Some(id) = archive_unresolved_identifier(url) {
-        let http = archive_agent();
-        return archive_pick_file_url(&http, id).ok_or_else(|| {
-            anyhow!("archive.org: no playable image/video under the size cap for '{id}'")
+        return archive_pick_file_url(id).ok_or_else(|| {
+            anyhow!("Internet Archive: no playable image/video under the size cap")
         });
     }
     Ok(url.to_string())
@@ -575,6 +868,19 @@ pub fn has_api_key(src: &CatalogSource) -> bool {
     }
 }
 
+/// True when this source should use the keyed (more generous) HTTP budget.
+pub fn source_uses_auth_budget(src: &CatalogSource) -> bool {
+    match src.kind.as_str() {
+        "pixabay" | "coverr" | "wallhaven" | "github" => has_api_key(src),
+        "nasa" => {
+            let k = source_api_key(src);
+            let t = k.trim();
+            !t.is_empty() && !t.eq_ignore_ascii_case("DEMO_KEY")
+        }
+        _ => false,
+    }
+}
+
 pub fn is_selectable(src: &CatalogSource) -> bool {
     !needs_api_key(src) || has_api_key(src)
 }
@@ -588,7 +894,9 @@ pub fn selectable_sources(sources: &[CatalogSource]) -> Vec<CatalogSource> {
 }
 
 pub(crate) fn env_key(name: &str) -> bool {
-    std::env::var(name).map(|s| !s.trim().is_empty()).unwrap_or(false)
+    std::env::var(name)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
 }
 
 pub fn missing_key_help(src: &CatalogSource) -> String {
@@ -645,4 +953,3 @@ pub(crate) fn github_token_env() -> String {
     }
     String::new()
 }
-

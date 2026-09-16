@@ -1,10 +1,8 @@
-
 use std::path::Path;
 
 use anyhow::{anyhow, Result};
 use gtk::{DropDown, SpinButton, Switch};
 use nwall_ipc::{client_request, FitMode, Request, Response};
-
 
 pub(crate) fn ipc_ok(resp: Response) -> Result<()> {
     match resp {
@@ -48,4 +46,3 @@ pub(crate) fn push_playback(
     })?)?;
     Ok(())
 }
-

@@ -1,4 +1,3 @@
-
 /// RGBA8 pixels for the tray / app icon (night sky, sun, two hills).
 pub fn nwall_icon_rgba(size: u32) -> Vec<u8> {
     let s = size as usize;

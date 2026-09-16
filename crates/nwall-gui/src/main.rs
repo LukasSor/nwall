@@ -1,4 +1,3 @@
-
 mod app;
 mod consts;
 mod ipc_util;
@@ -15,9 +14,7 @@ use nwall_ipc::{client_request, Request};
 use crate::consts::APP_ID;
 
 fn main() -> glib::ExitCode {
-    let app = adw::Application::builder()
-        .application_id(APP_ID)
-        .build();
+    let app = adw::Application::builder().application_id(APP_ID).build();
 
     app.connect_activate(|app| {
         if let Some(win) = app.windows().into_iter().next() {
@@ -37,7 +34,9 @@ fn ensure_daemon() -> Result<()> {
     if client_request(&Request::Ping).is_ok() {
         return Ok(());
     }
-    let _ = std::process::Command::new("nwall").args(["daemon"]).status();
+    let _ = std::process::Command::new("nwall")
+        .args(["daemon"])
+        .status();
     for _ in 0..40 {
         std::thread::sleep(std::time::Duration::from_millis(100));
         if client_request(&Request::Ping).is_ok() {

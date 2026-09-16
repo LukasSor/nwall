@@ -1,4 +1,3 @@
-
 use std::time::Duration;
 
 pub(crate) const SIDEBAR_MIN: i32 = 220;
@@ -27,6 +26,7 @@ pub(crate) const AVATAR_PX: i32 = 28;
 pub(crate) const TAG_CLOUD_MAX: usize = 24;
 pub(crate) const TAG_ROW_GAP: i32 = 8;
 pub(crate) const STATS_COL_GAP: u32 = 8;
+pub(crate) const STATS_SPLIT_NUDGE: i32 = -16;
 pub(crate) const STATS_SCROLL_MIN: i32 = 120;
 pub(crate) const APP_ICON_NAME: &str = "nwall";
 pub(crate) const APP_ID: &str = "dev.nwall.Picker";

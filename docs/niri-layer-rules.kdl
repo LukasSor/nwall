@@ -1,4 +1,4 @@
-// Live wallpaper in niri's backdrop (no extra nwall-backdrop layer); Overview uses smart-pause.
+// Live wallpaper in niri's backdrop
 layer-rule {
     match namespace="^nwall-live$"
     place-within-backdrop true

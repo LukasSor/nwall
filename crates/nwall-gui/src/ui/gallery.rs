@@ -1,4 +1,3 @@
-
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -8,17 +7,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use adw::prelude::*;
 use glib::object::SendWeakRef;
 use gtk::{
-    glib, Align, Box as GtkBox, FlowBox, FlowBoxChild, Image, Label, Orientation,
-    SelectionMode,
+    glib, Align, Box as GtkBox, FlowBox, FlowBoxChild, Image, Label, Orientation, SelectionMode,
 };
 use nwall_catalog as catalog;
-use nwall_ipc::{
-    client_request, is_image, is_video, OutputStatus, Request, Response,
-};
+use nwall_ipc::{client_request, is_image, is_video, OutputStatus, Request, Response};
 
-use crate::consts::*;
 use super::discover::thumbs::{make_fixed_thumb, pack_tile};
 use super::preview::bind_thumb;
+use crate::consts::*;
 
 pub(crate) fn compact_flow(flow: &FlowBox) {
     flow.set_selection_mode(SelectionMode::Single);
@@ -128,9 +124,10 @@ impl GalleryCriteria {
 }
 
 fn gallery_criteria(flow: &FlowBox) -> Rc<GalleryCriteria> {
-    if let Some(existing) =
-        unsafe { flow.data::<Rc<GalleryCriteria>>(CRITERIA_KEY).map(|c| (*c.as_ref()).clone()) }
-    {
+    if let Some(existing) = unsafe {
+        flow.data::<Rc<GalleryCriteria>>(CRITERIA_KEY)
+            .map(|c| (*c.as_ref()).clone())
+    } {
         return existing;
     }
     let crit = Rc::new(GalleryCriteria {
@@ -296,7 +293,11 @@ pub(crate) fn path_matches_library_search(path: &Path, query_lower: &str) -> boo
 
 pub(crate) fn kind_badge(video: bool) -> GtkBox {
     let row = GtkBox::new(Orientation::Horizontal, 0);
-    row.add_css_class(if video { "kind-badge" } else { "kind-badge-image" });
+    row.add_css_class(if video {
+        "kind-badge"
+    } else {
+        "kind-badge-image"
+    });
     row.set_valign(Align::Start);
     row.set_halign(Align::End);
     row.set_hexpand(false);
@@ -334,7 +335,11 @@ pub(crate) fn make_tile(path: &Path) -> FlowBoxChild {
 }
 
 pub(crate) fn child_path(child: &FlowBoxChild) -> Option<PathBuf> {
-    unsafe { child.data::<PathBuf>("nwall-path").map(|p| (*p.as_ref()).clone()) }
+    unsafe {
+        child
+            .data::<PathBuf>("nwall-path")
+            .map(|p| (*p.as_ref()).clone())
+    }
 }
 
 fn child_is_video(child: &FlowBoxChild) -> bool {

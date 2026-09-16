@@ -1,13 +1,10 @@
-
 use std::cell::Cell;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::{
-    gdk, glib, EventControllerKey, EventControllerScroll, SpinButton,
-};
+use gtk::{gdk, glib, EventControllerKey, EventControllerScroll, SpinButton};
 use nwall_ipc::{default_config_path, Config};
 
 use crate::consts::*;
@@ -676,7 +673,10 @@ pub(crate) fn bind_window_zoom(
     scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
     let bump_s = Rc::clone(&bump);
     scroll.connect_scroll(move |c, _, dy| {
-        if !c.current_event_state().contains(gdk::ModifierType::CONTROL_MASK) {
+        if !c
+            .current_event_state()
+            .contains(gdk::ModifierType::CONTROL_MASK)
+        {
             return glib::Propagation::Proceed;
         }
         if dy < 0.0 {

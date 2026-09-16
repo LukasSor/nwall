@@ -52,6 +52,9 @@ music_on_other_audio = true
 
 # "eDP-1" = "/path/to/laptop.mp4"
 
+# Background music is per-wallpaper (File / Archive.org / YouTube Music in the GUI).
+# YouTube Music search/preview uses InnerTube. yt-dlp is optional for pasted playlist URLs.
+
 # Discover kinds: wallhaven, archive, bing, nasa, github, pixabay, coverr, index
 
 # API keys: wallhaven NSFW, pixabay, coverr. GitHub: GITHUB_TOKEN

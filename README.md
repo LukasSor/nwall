@@ -19,7 +19,7 @@ nwall fixes that path instead of working around it:
 - ffmpeg decode is paced to the target FPS and scaled to the display size before it ever reaches the compositor
 - frames are presented through `wl_shm` + `wp_viewporter` on an opaque surface with no input region
 - the daemon waits on frame callbacks rather than flooding niri with commits
-- a single `nwall-live` layer-shell surface does the animation
+- a `nwall-live` layer-shell surface does the animation
 - playback smart-pauses on fullscreen, Overview, window drag, and when the wallpaper is fully covered
 
 ## Screenshots
@@ -57,6 +57,7 @@ nwall fixes that path instead of working around it:
 **Audio**
 
 - Per-wallpaper looping background music, stored in a sidecar next to the media file
+- Sources: a local audio file, Internet Archive, or YouTube Music (`yt-dlp`)
 - Independent volume, mute, and pause rules for wallpaper audio and background music
 - Optional pause when something else on the system is playing audio
 
@@ -74,7 +75,7 @@ nwall fixes that path instead of working around it:
 - `ffmpeg` and `ffprobe` on `PATH`
 - GTK4 and libadwaita — only if you build the GUI
 - A StatusNotifier host — only if you enable the tray
-- `yt-dlp` — only for the "Add from YouTube" button
+- `yt-dlp` — "Add from YouTube" and YouTube Music background tracks
 
 ## Installation
 
